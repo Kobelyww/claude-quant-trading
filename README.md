@@ -198,6 +198,48 @@ cd quant-trading
 python -m unittest discover -s tests -v
 ```
 
+## Django Web 应用 (`django-app` 分支)
+
+本仓库还包含一个完整的 Django Web 界面，可在浏览器中操作所有量化功能。
+
+```bash
+# 切换到 Django 分支
+git checkout django-app
+
+# 安装依赖
+pip install django langchain-deepseek python-dotenv
+
+# 配置 DeepSeek API（用于 AI 功能）
+cp ../.env .env  # 或手动创建
+
+# 初始化数据库
+cd django_app
+python manage.py migrate
+
+# 启动服务
+python manage.py runserver
+# 访问 http://localhost:8000
+```
+
+### Web 功能
+
+| 模块 | 路径 | 功能 |
+|------|------|------|
+| 仪表盘 | `/` | 统计概览、快捷入口 |
+| 数据管理 | `/data/` | 添加标的、拉取行情、预览K线 |
+| 策略管理 | `/strategies/` | 手动创建 / AI 生成策略代码 |
+| 回测中心 | `/backtest/` | 运行回测、ECharts 交互图表、多策略对比 |
+| AI 分析 | `/analysis/` | DeepSeek 生成市场分析报告 |
+
+### 技术栈
+
+| 层 | 技术 |
+|---|---|
+| 后端 | Django 5.x + SQLite |
+| 前端 | Bootstrap 5 + ECharts 5 + Marked.js |
+| 量化引擎 | 复用 `scripts/` 全部模块 |
+| AI | DeepSeek API (langchain-deepseek) |
+
 ## 许可
 
 MIT License

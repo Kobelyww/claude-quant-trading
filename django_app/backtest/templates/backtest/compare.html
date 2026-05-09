@@ -1,0 +1,38 @@
+{% extends "base.html" %}{% block title %}策略对比{% endblock %}
+{% block content %}
+<h4><i class="bi bi-bar-chart"></i> 策略对比</h4>
+<div class="card p-4 mb-4">
+    <form method="get" class="row g-2">
+        <div class="col-md-10">
+            <select name="ids" class="form-select" multiple style="height:120px">
+                {% for r in all_runs %}<option value="{{ r.id }}" {% if r in runs %}selected{% endif %}>#{{ r.id }} {{ r.symbol.code }} - {{ r.strategy.name }} ({{ r.created_at|date:"Y-m-d" }})</option>{% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2 d-flex align-items-end"><button type="submit" class="btn btn-primary w-100">对比</button></div>
+    </form>
+</div>
+{% if runs %}
+<div class="card p-3"><div id="compareChart" style="height:450px"></div></div>
+{% endif %}
+<a href="{% url 'backtest_list' %}" class="btn btn-secondary mt-3">返回</a>
+{% endblock %}
+{% block extra_js %}
+{% if runs %}
+<script>
+var series = {{ series|safe }};
+series.forEach(function(s) {
+    s.type = 'line';
+    s.smooth = true;
+    var first = s.data[0] ? s.data[0].value : 1;
+    s.data = s.data.map(function(d) { return (d.value / first).toFixed(4); });
+});
+var chart = echarts.init(document.getElementById('compareChart'));
+chart.setOption({
+    tooltip: {trigger: 'axis'},
+    legend: {data: series.map(s => s.name), bottom: 0},
+    grid: {left: 60, right: 20, top: 20, bottom: 40},
+    xAxis: {type: 'category', data: series[0] ? series[0].data.map((_,i) => i) : []},
+    yAxis: {type: 'value', axisLabel: {formatter: v => v.toFixed(2)+'x'}},
+    series: series
+});
+</script>{% endif %}{% endblock %}

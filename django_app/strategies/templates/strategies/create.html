@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}创建策略{% endblock %}
+{% block content %}
+<h4><i class="bi bi-plus-circle"></i> 创建策略</h4>
+<div class="card p-4"><form method="post">{% csrf_token %}
+    <div class="mb-3"><label class="form-label">名称 *</label><input type="text" name="name" class="form-control" required></div>
+    <div class="mb-3"><label class="form-label">类型</label><select name="strategy_type" class="form-select" id="strategyType" onchange="toggleParams(this.value)">
+        {% for val, label in type_choices %}<option value="{{ val }}">{{ label }}</option>{% endfor %}</select></div>
+    <div id="params_ma_cross" class="params-group"><div class="row g-2"><div class="col-md-6"><label class="form-label">短期均线</label><input type="number" name="short_window" value="5" class="form-control"></div><div class="col-md-6"><label class="form-label">长期均线</label><input type="number" name="long_window" value="20" class="form-control"></div></div></div>
+    <div id="params_momentum" class="params-group" style="display:none"><div class="row g-2"><div class="col-md-6"><label class="form-label">回溯天数</label><input type="number" name="lookback" value="20" class="form-control"></div></div></div>
+    <div id="params_mean_reversion" class="params-group" style="display:none"><div class="row g-2"><div class="col-md-6"><label class="form-label">窗口</label><input type="number" name="window" value="20" class="form-control"></div><div class="col-md-6"><label class="form-label">标准差倍数</label><input type="number" step="0.1" name="num_std" value="2.0" class="form-control"></div></div></div>
+    <div id="params_grid" class="params-group" style="display:none"><div class="row g-2"><div class="col-md-6"><label class="form-label">网格步长</label><input type="number" step="0.01" name="grid_step" value="0.02" class="form-control"></div></div></div>
+    <div class="mb-3 mt-3"><label class="form-label">自定义代码 (可选)</label><textarea name="code" class="form-control" rows="5" style="font-family:monospace"></textarea></div>
+    <button type="submit" class="btn btn-primary">创建</button><a href="{% url 'strategy_list' %}" class="btn btn-secondary ms-2">返回</a>
+</form></div>
+<script>function toggleParams(v){document.querySelectorAll('.params-group').forEach(e=>e.style.display='none');const el=document.getElementById('params_'+v);if(el)el.style.display='block';}</script>
+{% endblock %}

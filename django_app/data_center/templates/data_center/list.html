@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% block title %}数据管理{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4><i class="bi bi-database"></i> 数据管理</h4>
+    <a href="{% url 'data_add' %}" class="btn btn-primary"><i class="bi bi-plus-circle"></i> 添加标的</a>
+</div>
+<div class="card">
+    <table class="table table-hover mb-0"><thead><tr><th>代码</th><th>名称</th><th>市场</th><th>数据条数</th><th>操作</th></tr></thead><tbody>
+    {% for sym in symbols %}
+    <tr><td><strong>{{ sym.code }}</strong></td><td>{{ sym.name|default:"-" }}</td><td>{{ sym.get_market_display }}</td>
+        <td>{{ sym._data_count }}</td>
+        <td>
+            <a href="{% url 'data_fetch' sym.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-cloud-download"></i> 拉取</a>
+            <a href="{% url 'data_delete' sym.id %}" class="btn btn-sm btn-outline-danger" onclick="return confirm('确定删除?')"><i class="bi bi-trash"></i></a>
+        </td></tr>
+    {% empty %}<tr><td colspan="5" class="text-center text-muted py-4">暂无标的，请添加</td></tr>{% endfor %}
+    </tbody></table>
+</div>
+{% endblock %}

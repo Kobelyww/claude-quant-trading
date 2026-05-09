@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block title %}运行回测{% endblock %}
+{% block content %}
+<h4><i class="bi bi-play-fill"></i> 运行回测</h4>
+<div class="card p-4"><form method="post">{% csrf_token %}
+    <div class="row g-3">
+        <div class="col-md-4"><label class="form-label">标的 *</label><select name="symbol_id" class="form-select" required>
+            <option value="">选择标的</option>{% for s in symbols %}<option value="{{ s.id }}">{{ s.code }} ({{ s.get_market_display }})</option>{% endfor %}</select></div>
+        <div class="col-md-4"><label class="form-label">策略 *</label><select name="strategy_id" class="form-select" required>
+            <option value="">选择策略</option>{% for s in strategies %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select></div>
+        <div class="col-md-4"><label class="form-label">初始资金</label><input type="number" name="initial_cash" value="100000" class="form-control"></div>
+        <div class="col-md-4"><label class="form-label">开始日期</label><input type="date" name="start_date" class="form-control" required></div>
+        <div class="col-md-4"><label class="form-label">结束日期</label><input type="date" name="end_date" class="form-control" required></div>
+        <div class="col-md-4 d-flex align-items-end"><button type="submit" class="btn btn-primary w-100"><i class="bi bi-play-fill"></i> 启动回测</button></div>
+    </div>
+</form></div>
+<a href="{% url 'backtest_list' %}" class="btn btn-secondary mt-3">返回</a>
+{% endblock %}

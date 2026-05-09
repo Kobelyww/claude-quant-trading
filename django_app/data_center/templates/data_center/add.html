@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% block title %}添加标的{% endblock %}
+{% block content %}
+<h4><i class="bi bi-plus-circle"></i> 添加标的</h4>
+<div class="card p-4"><form method="post">{% csrf_token %}
+    <div class="mb-3"><label class="form-label">代码 *</label><input type="text" name="code" class="form-control" placeholder="000001 / AAPL / BTC/USDT" required></div>
+    <div class="mb-3"><label class="form-label">名称</label><input type="text" name="name" class="form-control" placeholder="可选"></div>
+    <div class="mb-3"><label class="form-label">市场</label><select name="market" class="form-select"><option value="auto">自动检测</option><option value="a_stock">A股</option><option value="us_stock">美股</option><option value="crypto">加密货币</option></select></div>
+    <button type="submit" class="btn btn-primary">添加</button><a href="{% url 'data_list' %}" class="btn btn-secondary ms-2">返回</a>
+</form></div>
+{% endblock %}

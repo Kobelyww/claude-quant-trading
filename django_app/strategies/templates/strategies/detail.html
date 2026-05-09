@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}{{ strategy.name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4>{{ strategy.name }}</h4>
+    <div><a href="{% url 'strategy_edit' strategy.id %}" class="btn btn-sm btn-outline-primary">编辑</a>
+        <a href="{% url 'strategy_delete' strategy.id %}" class="btn btn-sm btn-outline-danger" onclick="return confirm('确定删除?')">删除</a></div>
+</div>
+<div class="card p-4">
+    <table class="table"><tr><th>类型</th><td>{{ strategy.get_strategy_type_display }}</td></tr>
+    <tr><th>参数</th><td><code>{{ strategy.params|default:"{}" }}</code></td></tr>
+    <tr><th>AI生成</th><td>{% if strategy.is_ai_generated %}<span class="badge bg-info">是</span>{% else %}否{% endif %}</td></tr>
+    <tr><th>创建时间</th><td>{{ strategy.created_at }}</td></tr></table>
+    {% if strategy.code %}<h6 class="mt-3">策略代码</h6><pre class="bg-light p-3 rounded"><code>{{ strategy.code }}</code></pre>{% endif %}
+</div>
+<a href="{% url 'strategy_list' %}" class="btn btn-secondary mt-3">返回</a>
+{% endblock %}

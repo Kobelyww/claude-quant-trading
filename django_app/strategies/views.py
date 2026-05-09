@@ -2,6 +2,7 @@ import json
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from .models import Strategy
+from dashboard.settings_utils import get_setting
 
 
 def strategy_list(request):
@@ -49,11 +50,10 @@ def strategy_ai_generate(request):
 
         try:
             from langchain_deepseek import ChatDeepSeek
-            from django.conf import settings
 
             llm = ChatDeepSeek(model="deepseek-v4-pro",
-                               api_key=settings.DEEPSEEK_API_KEY,
-                               api_base=settings.DEEPSEEK_API_BASE)
+                               api_key=get_setting("DEEPSEEK_API_KEY"),
+                               api_base=get_setting("DEEPSEEK_API_BASE", "https://api.deepseek.com"))
             prompt = f"""Generate a Python trading strategy class that subclasses BaseStrategy.
 Trading idea: {description}
 

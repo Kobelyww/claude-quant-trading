@@ -99,28 +99,38 @@ class DataFetcher:
             if col not in df.columns:
                 df[col] = np.nan
         df["symbol"] = symbol
-        df = df[["open", "high", "low", "close", "volume", "symbol"]]
+        base_cols = ["open", "high", "low", "close", "volume", "symbol"]
+        if "date" in df.columns:
+            base_cols = ["date"] + base_cols
+        df = df[base_cols]
         if df.index.name != "date" and "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"])
             df = df.set_index("date")
         return df.sort_index()
 
+    def _get_exchange_prefix(self, symbol: str) -> str:
+        """Get exchange prefix for akshare腾讯源: sz for 深交所, sh for 上交所"""
+        code = symbol.zfill(6)
+        if code.startswith(("000", "001", "002", "003", "300", "301")):
+            return f"sz{code}"
+        elif code.startswith(("600", "601", "603", "605", "688")):
+            return f"sh{code}"
+        return f"sz{code}"
+
     def _fetch_a_stock(self, symbol: str, start: Optional[str],
                        end: Optional[str], period: str) -> pd.DataFrame:
         ak = self._get_akshare()
         s, e = self._parse_dates(start, end)
-        df = ak.stock_zh_a_hist(
-            symbol=symbol,
-            period="daily",
+        full_symbol = self._get_exchange_prefix(symbol)
+        df = ak.stock_zh_a_hist_tx(
+            symbol=full_symbol,
             start_date=s.strftime("%Y%m%d"),
             end_date=e.strftime("%Y%m%d"),
             adjust="qfq",
         )
-        col_map = {"开盘": "open", "最高": "high", "最低": "low",
-                   "收盘": "close", "成交量": "volume", "日期": "date"}
-        df = df.rename(columns=col_map)
-        df["date"] = pd.to_datetime(df["日期"])
-        df = df.set_index("date")
+        df = df.rename(columns={"amount": "volume"})
+        if "volume" in df.columns:
+            df["volume"] = (df["volume"] / df["close"]).astype(int)
         return self._normalize_columns(df, symbol)
 
     def _fetch_us_stock(self, symbol: str, start: Optional[str],

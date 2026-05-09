@@ -10,7 +10,7 @@
 {% block extra_js %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    var content = {{ report.content|safe|escapejs }};
+    var content = "{{ report.content|safe|escapejs }}";
     document.getElementById('reportContent').innerHTML = marked.parse(content);
 });
 </script>

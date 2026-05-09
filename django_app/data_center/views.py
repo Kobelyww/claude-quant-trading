@@ -8,7 +8,7 @@ from scripts.data_fetcher import DataFetcher
 def symbol_list(request):
     symbols = Symbol.objects.all()
     for sym in symbols:
-        sym._data_count = sym.marketdata_set.count()
+        sym.cached_data_count = sym.marketdata_set.count()
     return render(request, "data_center/list.html", {"symbols": symbols})
 
 

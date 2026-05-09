@@ -8,7 +8,7 @@
     <table class="table table-hover mb-0"><thead><tr><th>代码</th><th>名称</th><th>市场</th><th>数据条数</th><th>操作</th></tr></thead><tbody>
     {% for sym in symbols %}
     <tr><td><strong>{{ sym.code }}</strong></td><td>{{ sym.name|default:"-" }}</td><td>{{ sym.get_market_display }}</td>
-        <td>{{ sym._data_count }}</td>
+        <td>{{ sym.cached_data_count }}</td>
         <td>
             <a href="{% url 'data_fetch' sym.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-cloud-download"></i> 拉取</a>
             <a href="{% url 'data_delete' sym.id %}" class="btn btn-sm btn-outline-danger" onclick="return confirm('确定删除?')"><i class="bi bi-trash"></i></a>

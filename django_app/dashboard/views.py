@@ -1,8 +1,32 @@
-from django.shortcuts import render
+from django.shortcuts import render, redirect
+from django.contrib import messages
 from data_center.models import Symbol
 from strategies.models import Strategy
 from backtest.models import BacktestRun
 from analysis.models import AnalysisReport
+
+
+def settings_page(request):
+    from .settings_utils import get_setting, set_setting
+
+    if request.method == "POST":
+        api_key = request.POST.get("api_key", "").strip()
+        api_base = request.POST.get("api_base", "").strip()
+        if not api_base:
+            api_base = "https://api.deepseek.com"
+
+        set_setting("DEEPSEEK_API_KEY", api_key)
+        set_setting("DEEPSEEK_API_BASE", api_base)
+        messages.success(request, "API 配置已保存，即刻生效")
+        return redirect("settings")
+
+    key = get_setting("DEEPSEEK_API_KEY")
+    base = get_setting("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    return render(request, "dashboard/settings.html", {
+        "api_key": key,
+        "api_base": base,
+        "has_key": bool(key),
+    })
 
 
 def index(request):

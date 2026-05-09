@@ -3,9 +3,9 @@ import pandas as pd
 import numpy as np
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
-from django.conf import settings
 from .models import AnalysisReport
 from data_center.models import Symbol
+from dashboard.settings_utils import get_setting
 
 
 def analysis_list(request):
@@ -45,8 +45,8 @@ def analysis_run(request):
 
             from langchain_deepseek import ChatDeepSeek
             llm = ChatDeepSeek(model="deepseek-v4-pro",
-                               api_key=settings.DEEPSEEK_API_KEY,
-                               api_base=settings.DEEPSEEK_API_BASE)
+                               api_key=get_setting("DEEPSEEK_API_KEY"),
+                               api_base=get_setting("DEEPSEEK_API_BASE", "https://api.deepseek.com"))
             prompt = f"""You are a quantitative analyst. Write a market analysis report in Chinese based on these metrics:
 {json.dumps(metrics, ensure_ascii=False)}
 

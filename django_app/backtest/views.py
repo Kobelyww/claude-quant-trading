@@ -67,6 +67,7 @@ def _run_backtest_thread(run_id):
             equity_data.append({"date": str(idx), "value": round(float(val), 2)})
 
         import numpy as np
+        from datetime import date as date_type
 
         class NpEncoder(json.JSONEncoder):
             def default(self, obj):
@@ -76,13 +77,16 @@ def _run_backtest_thread(run_id):
                     return float(obj)
                 if isinstance(obj, np.ndarray):
                     return obj.tolist()
-                if isinstance(obj, pd.Timestamp):
+                if isinstance(obj, (pd.Timestamp, date_type)):
                     return str(obj)
                 return super().default(obj)
 
-        run.result_json = result.performance
+        def safe_json(obj):
+            return json.loads(json.dumps(obj, cls=NpEncoder))
+
+        run.result_json = safe_json(result.performance)
         run.equity_curve = equity_data
-        run.trades_json = result.trades
+        run.trades_json = safe_json(result.trades)
         run.status = "done"
     except Exception as e:
         run.status = "failed"

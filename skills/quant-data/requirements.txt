@@ -1,0 +1,5 @@
+akshare>=1.14.0
+yfinance>=0.2.40
+ccxt>=4.4.0
+pandas>=2.0.0
+numpy>=1.24.0

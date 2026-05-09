@@ -1,0 +1,8 @@
+{
+  "name": "quant-trading",
+  "version": "0.1.0",
+  "description": "Multi-market quantitative trading system with AI-driven strategy generation, backtesting engine, and market analysis — powered by DeepSeek",
+  "author": {
+    "name": "Quant Trading"
+  }
+}

@@ -3,23 +3,36 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from quant_trading.core.enums import StrategyStatus
+from quant_trading.core.enums import OrderSide, StrategyStatus
+from quant_trading.core.models import OrderIntent
 from quant_trading.paper.engine import PaperTradingEngine
 from quant_trading.risk.engine import RiskEngine
 from quant_trading.risk.rules import MaxOrderValueRule, NoTradeWithoutDataRule, PriceSanityRule, StrategyStatusRule
 from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
 from quant_trading.storage.models import PortfolioSnapshotORM, RiskDecisionORM
-from quant_trading.strategy.builtin.ma_cross import MACrossStrategy
-from tests.integration.test_legacy_migration import _build_legacy_sample
 
 
-def test_paper_tick_persists_snapshot_and_risk_decision(tmp_path: Path):
-    legacy_db = tmp_path / "legacy.sqlite3"
-    _build_legacy_sample(legacy_db)
+class OneShotBuyStrategy:
+    name = "one_shot_buy"
+
+    def on_bar(self, bars, portfolio):
+        latest = bars[-1]
+        return [
+            OrderIntent(
+                instrument_id=latest.instrument_id,
+                symbol=latest.symbol,
+                side=OrderSide.BUY,
+                quantity=100,
+                reason="paper_tick_entry",
+            )
+        ]
+
+
+def test_paper_tick_persists_snapshot_and_risk_decision(legacy_sqlite_db: Path):
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
-    import_legacy_sqlite(legacy_db, engine)
+    import_legacy_sqlite(legacy_sqlite_db, engine)
 
     paper = PaperTradingEngine(
         engine=engine,
@@ -35,7 +48,7 @@ def test_paper_tick_persists_snapshot_and_risk_decision(tmp_path: Path):
     )
     result = paper.run_one_tick(
         symbol="000001",
-        strategy=MACrossStrategy(short_window=5, long_window=20, order_size=100),
+        strategy=OneShotBuyStrategy(),
         strategy_status=StrategyStatus.APPROVED,
     )
 
@@ -50,4 +63,8 @@ def test_paper_tick_persists_snapshot_and_risk_decision(tmp_path: Path):
     assert result.account_id > 0
     assert result.snapshot_count == 1
     assert result.risk_decision_count == len(risk_decisions)
+    assert result.risk_decision_count == 1
     assert len(snapshots) == 1
+    assert risk_decisions[0].decision == "approved"
+    assert snapshots[0].cash < Decimal("100000")
+    assert snapshots[0].market_value > Decimal("0")

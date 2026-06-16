@@ -15,16 +15,12 @@ from quant_trading.storage.models import (
     BacktestRunORM,
 )
 from quant_trading.strategy.builtin.ma_cross import MACrossStrategy
-from tests.integration.test_legacy_migration import _build_legacy_sample
 
 
-def test_backtest_persists_equity_orders_and_fills(tmp_path: Path):
-    legacy_db = tmp_path / "legacy.sqlite3"
-    _build_legacy_sample(legacy_db)
-
+def test_backtest_persists_equity_orders_and_fills(legacy_sqlite_db: Path):
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
-    import_legacy_sqlite(legacy_db, engine)
+    import_legacy_sqlite(legacy_sqlite_db, engine)
 
     backtest = BacktestEngine(
         engine=engine,
@@ -80,13 +76,10 @@ class InvalidSellStrategy:
         return []
 
 
-def test_backtest_does_not_swallow_accounting_errors(tmp_path: Path):
-    legacy_db = tmp_path / "legacy.sqlite3"
-    _build_legacy_sample(legacy_db)
-
+def test_backtest_does_not_swallow_accounting_errors(legacy_sqlite_db: Path):
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
-    import_legacy_sqlite(legacy_db, engine)
+    import_legacy_sqlite(legacy_sqlite_db, engine)
 
     backtest = BacktestEngine(
         engine=engine,

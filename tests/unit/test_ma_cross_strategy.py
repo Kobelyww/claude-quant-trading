@@ -28,7 +28,6 @@ def test_ma_cross_generates_buy_on_bullish_cross():
         make_bar(1, "10"),
         make_bar(2, "10"),
         make_bar(3, "11"),
-        make_bar(4, "12"),
     ]
     strategy = MACrossStrategy(short_window=2, long_window=3, order_size=100)
     portfolio = Portfolio(account_id=1, cash=Decimal("100000"))
@@ -39,6 +38,22 @@ def test_ma_cross_generates_buy_on_bullish_cross():
     assert intents[0].side is OrderSide.BUY
     assert intents[0].quantity == 100
     assert intents[0].reason == "ma_cross_bullish"
+
+
+def test_ma_cross_does_not_repeat_buy_after_cross_bar():
+    bars = [
+        make_bar(0, "10"),
+        make_bar(1, "10"),
+        make_bar(2, "10"),
+        make_bar(3, "11"),
+        make_bar(4, "12"),
+    ]
+    strategy = MACrossStrategy(short_window=2, long_window=3, order_size=100)
+    portfolio = Portfolio(account_id=1, cash=Decimal("100000"))
+
+    intents = strategy.on_bar(bars=bars, portfolio=portfolio)
+
+    assert intents == []
 
 
 def test_strategy_registry_returns_approved_builtin_strategy():

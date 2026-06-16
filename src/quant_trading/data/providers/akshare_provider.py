@@ -8,7 +8,13 @@ from quant_trading.data.validation import validate_bars
 class AkshareProvider:
     name = "akshare"
 
-    def fetch_daily_bars(self, symbol: str, start: str | None, end: str | None) -> list[Bar]:
+    def fetch_daily_bars(
+        self,
+        instrument_id: int,
+        symbol: str,
+        start: str | None,
+        end: str | None,
+    ) -> list[Bar]:
         import akshare as ak
 
         exchange_symbol = self._exchange_symbol(symbol)
@@ -20,7 +26,7 @@ class AkshareProvider:
         )
         bars = [
             Bar(
-                instrument_id=0,
+                instrument_id=instrument_id,
                 symbol=symbol,
                 market=Market.A_STOCK,
                 timestamp=row["date"],

@@ -23,8 +23,8 @@ class MACrossStrategy:
             return []
 
         closes = [bar.close for bar in bars]
-        previous_short = self._mean(closes[-self.short_window - 2 : -2])
-        previous_long = self._mean(closes[-self.long_window - 2 : -2])
+        previous_short = self._mean(closes[-self.short_window - 1 : -1])
+        previous_long = self._mean(closes[-self.long_window - 1 : -1])
         current_short = self._mean(closes[-self.short_window :])
         current_long = self._mean(closes[-self.long_window :])
         latest = bars[-1]

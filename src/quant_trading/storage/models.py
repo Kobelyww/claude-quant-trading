@@ -113,3 +113,40 @@ class BacktestFillORM(Base):
     commission: Mapped[float] = mapped_column(Numeric(18, 6))
     slippage: Mapped[float] = mapped_column(Numeric(18, 6))
     filled_at: Mapped[datetime] = mapped_column(Date)
+
+
+class PaperAccountORM(Base):
+    __tablename__ = "paper_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="Default Paper Account")
+    base_currency: Mapped[str] = mapped_column(String(16), default="CNY")
+    initial_cash: Mapped[float] = mapped_column(Numeric(18, 6))
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PortfolioSnapshotORM(Base):
+    __tablename__ = "portfolio_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("paper_accounts.id"), index=True)
+    timestamp: Mapped[datetime] = mapped_column(Date)
+    equity: Mapped[float] = mapped_column(Numeric(18, 6))
+    cash: Mapped[float] = mapped_column(Numeric(18, 6))
+    market_value: Mapped[float] = mapped_column(Numeric(18, 6))
+    realized_pnl: Mapped[float] = mapped_column(Numeric(18, 6))
+    unrealized_pnl: Mapped[float] = mapped_column(Numeric(18, 6))
+    drawdown: Mapped[float] = mapped_column(Numeric(18, 6))
+
+
+class RiskDecisionORM(Base):
+    __tablename__ = "risk_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    decision: Mapped[str] = mapped_column(String(32))
+    rule_name: Mapped[str] = mapped_column(String(128))
+    message: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

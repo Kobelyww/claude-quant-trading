@@ -10,11 +10,14 @@ def apply_fill(portfolio: Portfolio, fill: Fill) -> Portfolio:
     notional = fill.price * Decimal(fill.quantity)
 
     if fill.side is OrderSide.BUY:
-        updated.cash -= notional + fill.commission
+        total_cost = notional + fill.commission
+        if total_cost > updated.cash:
+            raise ValueError("insufficient cash for buy fill")
+        updated.cash -= total_cost
         existing = updated.positions.get(fill.instrument_id)
         if existing:
             total_quantity = existing.quantity + fill.quantity
-            total_cost = existing.avg_cost * Decimal(existing.quantity) + notional
+            total_cost = existing.avg_cost * Decimal(existing.quantity) + total_cost
             existing.quantity = total_quantity
             existing.avg_cost = total_cost / Decimal(total_quantity)
             existing.market_price = fill.price
@@ -23,7 +26,7 @@ def apply_fill(portfolio: Portfolio, fill: Fill) -> Portfolio:
                 instrument_id=fill.instrument_id,
                 symbol=fill.symbol,
                 quantity=fill.quantity,
-                avg_cost=fill.price,
+                avg_cost=total_cost / Decimal(fill.quantity),
                 market_price=fill.price,
             )
     else:

@@ -59,3 +59,47 @@ def test_risk_approves_valid_order():
     )
 
     assert decision.decision is RiskDecisionType.APPROVED
+
+
+def test_max_gross_exposure_rule_allows_sell_that_reduces_existing_position():
+    engine = RiskEngine([MaxGrossExposureRule(max_gross_exposure=Decimal("0.50"))])
+    intent = OrderIntent(1, "000001", OrderSide.SELL, 100, "reduce risk")
+    portfolio = Portfolio(
+        account_id=1,
+        cash=Decimal("40"),
+        positions={
+            1: Position(
+                instrument_id=1,
+                symbol="000001",
+                quantity=100,
+                avg_cost=Decimal("10"),
+                market_price=Decimal("10"),
+            )
+        },
+    )
+
+    decision = engine.check_order(
+        intent=intent,
+        latest_bar=make_bar(),
+        portfolio=portfolio,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    assert decision.decision is RiskDecisionType.APPROVED
+
+
+def test_max_gross_exposure_rule_rejects_non_positive_equity():
+    engine = RiskEngine([MaxGrossExposureRule(max_gross_exposure=Decimal("0.50"))])
+    intent = OrderIntent(1, "000001", OrderSide.BUY, 100, "test")
+    portfolio = Portfolio(account_id=1, cash=Decimal("0"))
+
+    decision = engine.check_order(
+        intent=intent,
+        latest_bar=make_bar(),
+        portfolio=portfolio,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    assert decision.decision is RiskDecisionType.REJECTED
+    assert decision.rule_name == "MaxGrossExposureRule"
+    assert decision.message == "portfolio equity must be positive"

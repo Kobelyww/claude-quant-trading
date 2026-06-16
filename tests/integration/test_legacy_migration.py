@@ -1,6 +1,6 @@
+from datetime import date, timedelta
 from pathlib import Path
 import sqlite3
-from datetime import date, timedelta
 
 from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
@@ -78,36 +78,9 @@ def _build_legacy_sample(db_path: Path) -> None:
         conn.close()
 
 
-def _needs_sample_rebuild(db_path: Path) -> bool:
-    if not db_path.exists() or db_path.stat().st_size == 0:
-        return True
-
-    conn = sqlite3.connect(db_path)
-    try:
-        tables = {
-            row[0]
-            for row in conn.execute(
-                "select name from sqlite_master where type='table'"
-            ).fetchall()
-        }
-        if {"data_center_symbol", "data_center_marketdata"} - tables:
-            return True
-        for (value,) in conn.execute(
-            "select date from data_center_marketdata order by date limit 200"
-        ).fetchall():
-            date.fromisoformat(value)
-        return False
-    except Exception:
-        return True
-    finally:
-        conn.close()
-
-
-def test_import_existing_legacy_sqlite_sample():
-    legacy_db = Path("django_app/db.sqlite3")
-    assert legacy_db.exists()
-    if _needs_sample_rebuild(legacy_db):
-        _build_legacy_sample(legacy_db)
+def test_import_existing_legacy_sqlite_sample(tmp_path: Path):
+    legacy_db = tmp_path / "legacy.sqlite3"
+    _build_legacy_sample(legacy_db)
 
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)

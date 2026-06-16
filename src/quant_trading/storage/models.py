@@ -60,3 +60,56 @@ class MarketBarORM(Base):
     ingestion_batch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     instrument: Mapped[InstrumentORM] = relationship(back_populates="bars")
+
+
+class BacktestRunORM(Base):
+    __tablename__ = "backtest_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy_name: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    initial_cash: Mapped[float] = mapped_column(Numeric(18, 6))
+    final_equity: Mapped[float] = mapped_column(Numeric(18, 6), default=0)
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BacktestEquityPointORM(Base):
+    __tablename__ = "backtest_equity_points"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("backtest_runs.id"), index=True)
+    timestamp: Mapped[datetime] = mapped_column(Date, index=True)
+    equity: Mapped[float] = mapped_column(Numeric(18, 6))
+    cash: Mapped[float] = mapped_column(Numeric(18, 6))
+    market_value: Mapped[float] = mapped_column(Numeric(18, 6))
+    drawdown: Mapped[float] = mapped_column(Numeric(18, 6))
+
+
+class BacktestOrderORM(Base):
+    __tablename__ = "backtest_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("backtest_runs.id"), index=True)
+    instrument_id: Mapped[int] = mapped_column(Integer)
+    symbol: Mapped[str] = mapped_column(String(32))
+    side: Mapped[str] = mapped_column(String(16))
+    quantity: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(256), default="")
+    status: Mapped[str] = mapped_column(String(32), default="filled")
+    submitted_at: Mapped[datetime] = mapped_column(Date)
+
+
+class BacktestFillORM(Base):
+    __tablename__ = "backtest_fills"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("backtest_runs.id"), index=True)
+    instrument_id: Mapped[int] = mapped_column(Integer)
+    symbol: Mapped[str] = mapped_column(String(32))
+    side: Mapped[str] = mapped_column(String(16))
+    quantity: Mapped[int] = mapped_column(Integer)
+    price: Mapped[float] = mapped_column(Numeric(18, 6))
+    commission: Mapped[float] = mapped_column(Numeric(18, 6))
+    slippage: Mapped[float] = mapped_column(Numeric(18, 6))
+    filled_at: Mapped[datetime] = mapped_column(Date)

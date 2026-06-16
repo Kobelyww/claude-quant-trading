@@ -6,7 +6,7 @@ Research and paper-trading platform for productized quantitative workflows.
 
 This version supports:
 
-- Importing legacy A-share daily data from `django_app/db.sqlite3`.
+- Importing legacy A-share daily data from `legacy/django_app/db.sqlite3`.
 - Storing instruments and market bars in normalized SQLAlchemy models.
 - Running a portfolio-style MA cross backtest.
 - Running a risk-gated paper trading tick with simulated fills.
@@ -41,10 +41,16 @@ http://localhost:8000/paper/snapshots
 The first migration source is:
 
 ```text
-django_app/db.sqlite3
+legacy/django_app/db.sqlite3
 ```
 
 The importer maps `data_center_symbol` to `instruments` and `data_center_marketdata` to `market_bars`.
+
+## Legacy Reference
+
+The original Claude plugin, scripts, slash commands, skills, and Django demo app live under `legacy/`.
+
+They are kept for migration reference only. New product code lives under `src/quant_trading/`.
 
 ## Safety
 

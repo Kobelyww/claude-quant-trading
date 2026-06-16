@@ -65,8 +65,10 @@ class BacktestEngine:
                     fill = self.broker.execute_market_order(intent, latest)
                     try:
                         portfolio = apply_fill(portfolio, fill)
-                    except ValueError:
-                        continue
+                    except ValueError as exc:
+                        if str(exc) == "insufficient cash for buy fill":
+                            continue
+                        raise
                     order_count += 1
                     fill_count += 1
                     session.add(

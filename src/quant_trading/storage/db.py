@@ -3,11 +3,20 @@ from contextlib import contextmanager
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from quant_trading.storage.models import Base
 
 
 def make_engine(database_url: str, echo: bool = False) -> Engine:
+    if database_url == "sqlite+pysqlite:///:memory:":
+        return create_engine(
+            database_url,
+            echo=echo,
+            future=True,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
     return create_engine(database_url, echo=echo, future=True)
 
 

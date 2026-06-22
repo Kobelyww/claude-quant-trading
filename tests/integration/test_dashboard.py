@@ -1,9 +1,11 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from quant_trading.api.main import create_app
-from quant_trading.storage.db import create_all, make_engine
+from quant_trading.storage.db import create_all, make_engine, session_scope
+from quant_trading.storage.models import PaperAccountORM, PaperRunORM
 
 
 def make_client():
@@ -73,7 +75,7 @@ def test_dashboard_displays_seeded_workflow_state(legacy_sqlite_db: Path):
 
 
 def test_dashboard_form_actions_complete_core_workflow(legacy_sqlite_db: Path):
-    client, _ = make_client()
+    client, engine = make_client()
 
     import_response = client.post(
         "/dashboard/actions/import-legacy",
@@ -96,15 +98,47 @@ def test_dashboard_form_actions_complete_core_workflow(legacy_sqlite_db: Path):
         data={"name": "Form Paper", "initial_cash": "100000"},
         follow_redirects=False,
     )
+    with session_scope(engine) as session:
+        account_id = session.scalar(
+            select(PaperAccountORM.id).where(PaperAccountORM.name == "Form Paper")
+        )
+    run_response = client.post(
+        "/dashboard/actions/paper/runs/ma-cross",
+        data={
+            "account_id": str(account_id),
+            "symbol": "000001",
+            "short_window": "3",
+            "long_window": "8",
+            "order_size": "50",
+            "max_order_value": "100000",
+        },
+        follow_redirects=False,
+    )
+    with session_scope(engine) as session:
+        run_id = session.scalar(
+            select(PaperRunORM.id).where(PaperRunORM.account_id == account_id)
+        )
+    tick_response = client.post(
+        "/dashboard/actions/paper/tick",
+        data={"run_id": str(run_id)},
+        follow_redirects=False,
+    )
 
     assert import_response.status_code == 303
     assert backtest_response.status_code == 303
     assert account_response.status_code == 303
+    assert run_response.status_code == 303
+    assert tick_response.status_code == 303
 
     response = client.get("/dashboard")
 
     assert response.status_code == 200
-    assert "Form Paper" in response.text
+    html = response.text
+    assert "Form Paper" in html
+    assert "000001" in html
+    assert "Paper Runs" in html
+    assert "Snapshots" in html
+    assert f"#{run_id}" in html
 
 
 def test_dashboard_account_form_error_displays_plain_message():

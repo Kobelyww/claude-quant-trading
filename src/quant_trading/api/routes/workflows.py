@@ -74,6 +74,8 @@ class CreateMACrossPaperRunRequest(BaseModel):
 def _run_command(callback: Callable[[], T]) -> T:
     try:
         return callback()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         message = str(exc)
         status_code = 404 if "not found" in message.lower() else 400

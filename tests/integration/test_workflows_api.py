@@ -36,19 +36,21 @@ def test_workflow_command_api_runs_import_backtest_paper_tick(legacy_sqlite_db: 
         "/workflows/paper/accounts",
         json={"name": "API Workflow Account", "initial_cash": "100000"},
     )
-    account_payload = account_response.json() if account_response.status_code == 200 else {}
+    assert account_response.status_code == 200
+    account_payload = account_response.json()
     run_response = client.post(
         "/workflows/paper/runs/ma-cross",
         json={
-            "account_id": account_payload.get("account_id", 1),
+            "account_id": account_payload["account_id"],
             "symbol": "000001",
             "short_window": 3,
             "long_window": 8,
             "order_size": 50,
         },
     )
-    run_payload = run_response.json() if run_response.status_code == 200 else {}
-    tick_response = client.post(f"/workflows/paper/runs/{run_payload.get('run_id', 1)}/tick")
+    assert run_response.status_code == 200
+    run_payload = run_response.json()
+    tick_response = client.post(f"/workflows/paper/runs/{run_payload['run_id']}/tick")
 
     assert import_response.status_code == 200
     assert import_response.json() == {"imported_symbols": 1, "imported_bars": 121}
@@ -61,13 +63,11 @@ def test_workflow_command_api_runs_import_backtest_paper_tick(legacy_sqlite_db: 
     assert float(backtest_payload["final_equity"]) > 0
     assert backtest_payload["equity_points"] == 121
 
-    assert account_response.status_code == 200
     assert account_payload["account_id"] > 0
     assert account_payload["name"] == "API Workflow Account"
     assert account_payload["initial_cash"] == "100000"
     assert account_payload["base_currency"] == "CNY"
 
-    assert run_response.status_code == 200
     assert run_payload["run_id"] > 0
     assert run_payload["account_id"] == account_payload["account_id"]
     assert run_payload["symbol"] == "000001"
@@ -119,3 +119,17 @@ def test_workflow_command_api_validates_invalid_payloads(legacy_sqlite_db: Path)
     assert invalid_backtest_response.status_code in {400, 422}
     assert blank_account_response.status_code in {400, 422}
     assert missing_tick_response.status_code == 404
+
+
+def test_workflow_command_api_maps_missing_legacy_import_path_to_404(tmp_path: Path):
+    client, _ = make_client()
+    missing_path = tmp_path / "missing.sqlite3"
+
+    response = client.post(
+        "/workflows/import-legacy",
+        json={"legacy_db_path": str(missing_path)},
+    )
+
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert str(missing_path) in detail or "not found" in detail.lower()

@@ -64,6 +64,8 @@ class PaperTradingEngine:
             raise ValueError("paper run requires an approved strategy")
         if not strategy_name:
             raise ValueError("strategy_name is required")
+        if getattr(strategy, "name", strategy_name) != strategy_name:
+            raise ValueError("strategy_name must match strategy.name")
         with session_scope(self.engine) as session:
             if session.get(PaperAccountORM, account_id) is None:
                 raise ValueError(f"paper account not found: {account_id}")

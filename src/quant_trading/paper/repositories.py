@@ -16,7 +16,12 @@ from quant_trading.storage.models import (
 
 
 def _json_dumps(value: dict) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    def default(obj):
+        if isinstance(obj, Decimal):
+            return str(obj)
+        raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=default)
 
 
 class PaperStateRepository:
@@ -103,4 +108,5 @@ class PaperStateRepository:
                 for row in positions
                 if row.quantity != 0
             },
+            realized_pnl=sum((row.realized_pnl for row in positions), Decimal("0")),
         )

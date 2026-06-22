@@ -55,6 +55,43 @@ class RecordingBuyStrategy:
         ]
 
 
+@dataclass
+class OversizedBuyStrategy:
+    name: str = "oversized_buy"
+
+    def on_bar(self, bars, portfolio):
+        latest = bars[-1]
+        return [
+            OrderIntent(
+                instrument_id=latest.instrument_id,
+                symbol=latest.symbol,
+                side=OrderSide.BUY,
+                quantity=100,
+                reason="paper_tick_insufficient_cash",
+            )
+        ]
+
+
+@dataclass
+class SellAllStrategy:
+    name: str = "sell_all"
+
+    def on_bar(self, bars, portfolio):
+        latest = bars[-1]
+        position = portfolio.positions.get(latest.instrument_id)
+        if position is None:
+            return []
+        return [
+            OrderIntent(
+                instrument_id=latest.instrument_id,
+                symbol=latest.symbol,
+                side=OrderSide.SELL,
+                quantity=position.quantity,
+                reason="paper_tick_exit",
+            )
+        ]
+
+
 def make_paper_engine(legacy_sqlite_db: Path):
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
@@ -313,3 +350,175 @@ def test_load_run_query_uses_row_lock_for_tick_idempotency():
     )
 
     assert "FOR UPDATE" in sql
+
+
+def test_rejected_strategy_status_creates_order_and_risk_decision_without_fill(
+    legacy_sqlite_db: Path,
+):
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    strategy = RecordingBuyStrategy()
+    account_id = paper.create_account(
+        name="Rejected Status Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    summary = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.DISABLED,
+    )
+
+    with session_scope(engine) as session:
+        order = session.scalar(select(PaperOrderORM).where(PaperOrderORM.run_id == run_id))
+        risk_decision = session.scalar(select(RiskDecisionORM).where(RiskDecisionORM.run_id == run_id))
+        ledger_rows = session.scalars(
+            select(CashLedgerORM)
+            .where(CashLedgerORM.account_id == account_id)
+            .order_by(CashLedgerORM.id)
+        ).all()
+
+    assert summary.orders_created == 1
+    assert summary.orders_filled == 0
+    assert summary.orders_rejected == 1
+    assert summary.fills_created == 0
+    assert summary.risk_decision_count == 1
+    assert order.status == "risk_rejected"
+    assert order.risk_decision == "rejected"
+    assert risk_decision.order_id == order.id
+    assert risk_decision.decision == "rejected"
+    assert persisted_counts(engine, account_id, run_id) == {
+        "orders": 1,
+        "fills": 0,
+        "positions": 0,
+        "ledger": 1,
+        "snapshots": 1,
+        "risk_decisions": 1,
+    }
+    assert [row.event_type for row in ledger_rows] == ["initial_deposit"]
+    assert ledger_rows[0].cash_after == Decimal("100000")
+
+
+def test_insufficient_cash_marks_order_skipped_without_cash_or_position_change(
+    legacy_sqlite_db: Path,
+):
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    strategy = OversizedBuyStrategy()
+    account_id = paper.create_account(
+        name="Insufficient Cash Paper",
+        initial_cash=Decimal("100"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    summary = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with session_scope(engine) as session:
+        order = session.scalar(select(PaperOrderORM).where(PaperOrderORM.run_id == run_id))
+        risk_decision = session.scalar(select(RiskDecisionORM).where(RiskDecisionORM.run_id == run_id))
+        ledger_rows = session.scalars(
+            select(CashLedgerORM)
+            .where(CashLedgerORM.account_id == account_id)
+            .order_by(CashLedgerORM.id)
+        ).all()
+
+    assert summary.orders_created == 1
+    assert summary.orders_filled == 0
+    assert summary.orders_rejected == 0
+    assert summary.fills_created == 0
+    assert summary.risk_decision_count == 1
+    assert order.status == "skipped"
+    assert order.risk_decision == "approved"
+    assert risk_decision.order_id == order.id
+    assert risk_decision.decision == "approved"
+    assert persisted_counts(engine, account_id, run_id) == {
+        "orders": 1,
+        "fills": 0,
+        "positions": 0,
+        "ledger": 1,
+        "snapshots": 1,
+        "risk_decisions": 1,
+    }
+    assert [row.event_type for row in ledger_rows] == ["initial_deposit"]
+    assert ledger_rows[0].cash_after == Decimal("100")
+
+
+def test_sell_to_zero_retains_position_row_for_audit(legacy_sqlite_db: Path):
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    buy_strategy = RecordingBuyStrategy()
+    account_id = paper.create_account(
+        name="Sell To Zero Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=buy_strategy,
+        strategy_name=buy_strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    paper.run_one_tick(
+        run_id=run_id,
+        strategy=buy_strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    add_later_bar(engine)
+
+    sell_strategy = SellAllStrategy(name=buy_strategy.name)
+    summary = paper.run_one_tick(
+        run_id=run_id,
+        strategy=sell_strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with session_scope(engine) as session:
+        position = session.scalar(
+            select(PaperPositionORM).where(PaperPositionORM.account_id == account_id)
+        )
+        ledger_rows = session.scalars(
+            select(CashLedgerORM)
+            .where(CashLedgerORM.account_id == account_id)
+            .order_by(CashLedgerORM.id)
+        ).all()
+        fill = session.scalar(
+            select(PaperFillORM)
+            .where(PaperFillORM.run_id == run_id, PaperFillORM.side == OrderSide.SELL.value)
+        )
+        loaded_portfolio = PaperStateRepository(session).load_portfolio(account_id)
+
+    assert summary.orders_created == 1
+    assert summary.orders_filled == 1
+    assert summary.orders_rejected == 0
+    assert summary.fills_created == 1
+    assert position.quantity == 0
+    assert position.realized_pnl != Decimal("0")
+    assert fill.side == "sell"
+    assert loaded_portfolio.positions == {}
+    assert loaded_portfolio.realized_pnl == position.realized_pnl
+    assert [row.event_type for row in ledger_rows] == [
+        "initial_deposit",
+        "buy_notional",
+        "commission",
+        "sell_notional",
+        "commission",
+    ]
+    assert ledger_rows[3].amount == fill.price * Decimal(fill.quantity)
+    assert ledger_rows[4].amount == -fill.commission

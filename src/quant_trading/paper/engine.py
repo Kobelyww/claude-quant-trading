@@ -185,7 +185,7 @@ class PaperTradingEngine:
                 latest.timestamp,
                 realized_pnl_instrument_id=latest.instrument_id,
             )
-            repository.record_snapshot(run.account_id, latest.timestamp, portfolio)
+            repository.record_snapshot(run.account_id, run.id, latest.timestamp, portfolio)
             run.last_processed_at = latest.timestamp
             session.flush()
             return PaperTickSummary(

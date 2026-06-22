@@ -218,6 +218,9 @@ class PortfolioSnapshotORM(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("paper_accounts.id"), index=True)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_runs.id"), nullable=True, index=True
+    )
     timestamp: Mapped[datetime] = mapped_column(Date)
     equity: Mapped[float] = mapped_column(Numeric(18, 6))
     cash: Mapped[float] = mapped_column(Numeric(18, 6))

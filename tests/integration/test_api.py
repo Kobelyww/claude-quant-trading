@@ -79,6 +79,53 @@ def seed_paper_run(engine, legacy_sqlite_db):
     return account_id, run_id
 
 
+def seed_two_paper_runs_on_same_account(engine, legacy_sqlite_db):
+    import_legacy_sqlite(legacy_sqlite_db, engine)
+    paper = PaperTradingEngine(
+        engine=engine,
+        initial_cash=Decimal("100000"),
+        risk_engine=RiskEngine(
+            [
+                StrategyStatusRule(),
+                NoTradeWithoutDataRule(),
+                PriceSanityRule(),
+                MaxOrderValueRule(max_order_value=Decimal("100000")),
+            ]
+        ),
+    )
+    strategy = ApiBuyIfFlatStrategy()
+    account_id = paper.create_account(
+        name="API Shared Account",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    run1_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    paper.run_one_tick(
+        run_id=run1_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    run2_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    paper.run_one_tick(
+        run_id=run2_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    return account_id, run1_id, run2_id
+
+
 def test_health_endpoint_returns_ok():
     client, _ = make_client()
 
@@ -178,6 +225,7 @@ def test_paper_snapshots_endpoint_lists_latest_snapshots_first():
     assert response.status_code == 200
     payload = response.json()
     assert [row["timestamp"] for row in payload] == ["2026-01-02", "2026-01-01"]
+    assert [row["run_id"] for row in payload] == [None, None]
     assert payload[0]["equity"] == 100500.0
     assert payload[0]["market_value"] == 1500.0
 
@@ -271,6 +319,31 @@ def test_paper_read_apis_list_persisted_account_run_and_execution_state(legacy_s
     snapshots = snapshots_response.json()
     assert len(snapshots) == 1
     assert snapshots[0]["account_id"] == account_id
+    assert snapshots[0]["run_id"] == run_id
     assert snapshots[0]["timestamp"] == "2026-05-01"
     assert snapshots[0]["cash"] == ledger[-1]["cash_after"]
     assert snapshots[0]["market_value"] > 0
+
+
+def test_paper_run_snapshots_are_scoped_to_run_id(legacy_sqlite_db):
+    client, engine = make_client()
+    account_id, run1_id, run2_id = seed_two_paper_runs_on_same_account(engine, legacy_sqlite_db)
+
+    run1_response = client.get(f"/paper/runs/{run1_id}/snapshots")
+    run2_response = client.get(f"/paper/runs/{run2_id}/snapshots")
+    global_response = client.get("/paper/snapshots")
+
+    assert run1_response.status_code == 200
+    assert run2_response.status_code == 200
+    assert global_response.status_code == 200
+    assert len(global_response.json()) == 2
+
+    run1_snapshots = run1_response.json()
+    assert len(run1_snapshots) == 1
+    assert run1_snapshots[0]["account_id"] == account_id
+    assert run1_snapshots[0]["run_id"] == run1_id
+
+    run2_snapshots = run2_response.json()
+    assert len(run2_snapshots) == 1
+    assert run2_snapshots[0]["account_id"] == account_id
+    assert run2_snapshots[0]["run_id"] == run2_id

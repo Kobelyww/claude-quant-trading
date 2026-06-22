@@ -272,11 +272,13 @@ class PaperStateRepository:
     def record_snapshot(
         self,
         account_id: int,
+        run_id: int,
         timestamp: date,
         portfolio: Portfolio,
     ) -> PortfolioSnapshotORM:
         row = PortfolioSnapshotORM(
             account_id=account_id,
+            run_id=run_id,
             timestamp=timestamp,
             equity=portfolio.equity,
             cash=portfolio.cash,

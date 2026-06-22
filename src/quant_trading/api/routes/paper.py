@@ -137,6 +137,7 @@ def _risk_decision_payload(row: RiskDecisionORM) -> dict:
 def _snapshot_payload(row: PortfolioSnapshotORM) -> dict:
     return {
         "account_id": row.account_id,
+        "run_id": row.run_id,
         "timestamp": row.timestamp.isoformat(),
         "equity": float(row.equity),
         "cash": float(row.cash),
@@ -250,10 +251,10 @@ def list_paper_run_risk_decisions(run_id: int, request: Request) -> list[dict]:
 @router.get("/paper/runs/{run_id}/snapshots")
 def list_paper_run_snapshots(run_id: int, request: Request) -> list[dict]:
     with session_scope(request.app.state.engine) as session:
-        run = _get_run_or_404(session, run_id)
+        _get_run_or_404(session, run_id)
         rows = session.scalars(
             select(PortfolioSnapshotORM)
-            .where(PortfolioSnapshotORM.account_id == run.account_id)
+            .where(PortfolioSnapshotORM.run_id == run_id)
             .order_by(PortfolioSnapshotORM.timestamp.desc())
         ).all()
         return [_snapshot_payload(row) for row in rows]

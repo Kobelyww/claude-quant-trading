@@ -5,13 +5,17 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from quant_trading.core.enums import CashLedgerEventType, PaperRunStatus
-from quant_trading.core.models import Portfolio, Position
+from quant_trading.core.enums import CashLedgerEventType, PaperOrderStatus, PaperRunStatus
+from quant_trading.core.models import Fill, OrderIntent, Portfolio, Position, RiskDecision
 from quant_trading.storage.models import (
     CashLedgerORM,
     PaperAccountORM,
+    PaperFillORM,
+    PaperOrderORM,
     PaperPositionORM,
     PaperRunORM,
+    PortfolioSnapshotORM,
+    RiskDecisionORM,
 )
 
 
@@ -110,3 +114,176 @@ class PaperStateRepository:
             },
             realized_pnl=sum((row.realized_pnl for row in positions), Decimal("0")),
         )
+
+    def create_order(self, run: PaperRunORM, intent: OrderIntent, submitted_at: date) -> PaperOrderORM:
+        order = PaperOrderORM(
+            run_id=run.id,
+            account_id=run.account_id,
+            instrument_id=intent.instrument_id,
+            symbol=intent.symbol,
+            side=intent.side.value,
+            order_type=intent.order_type.value,
+            quantity=intent.quantity,
+            limit_price=intent.limit_price,
+            reason=intent.reason,
+            status=PaperOrderStatus.CREATED.value,
+            submitted_at=submitted_at,
+        )
+        self.session.add(order)
+        self.session.flush()
+        return order
+
+    def record_risk_decision(
+        self, run_id: int, order_id: int, decision: RiskDecision
+    ) -> RiskDecisionORM:
+        row = RiskDecisionORM(
+            run_id=run_id,
+            order_id=order_id,
+            decision=decision.decision.value,
+            rule_name=decision.rule_name,
+            message=decision.message,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def mark_order_rejected(self, order: PaperOrderORM, risk_decision: str) -> PaperOrderORM:
+        order.status = PaperOrderStatus.RISK_REJECTED.value
+        order.risk_decision = risk_decision
+        self.session.flush()
+        return order
+
+    def mark_order_skipped(self, order: PaperOrderORM, risk_decision: str) -> PaperOrderORM:
+        order.status = PaperOrderStatus.SKIPPED.value
+        order.risk_decision = risk_decision
+        self.session.flush()
+        return order
+
+    def record_fill(self, run: PaperRunORM, order: PaperOrderORM, fill: Fill) -> PaperFillORM:
+        row = PaperFillORM(
+            run_id=run.id,
+            account_id=run.account_id,
+            order_id=order.id,
+            instrument_id=fill.instrument_id,
+            symbol=fill.symbol,
+            side=fill.side.value,
+            quantity=fill.quantity,
+            price=fill.price,
+            commission=fill.commission,
+            slippage=fill.slippage,
+            filled_at=fill.filled_at,
+        )
+        self.session.add(row)
+        order.status = PaperOrderStatus.FILLED.value
+        order.risk_decision = order.risk_decision or "approved"
+        self.session.flush()
+        return row
+
+    def append_cash_ledger(
+        self,
+        account_id: int,
+        run_id: int,
+        order_id: int,
+        fill_id: int,
+        event_type: CashLedgerEventType,
+        amount: Decimal,
+        cash_after: Decimal,
+        currency: str,
+        occurred_at: date,
+    ) -> CashLedgerORM:
+        row = CashLedgerORM(
+            account_id=account_id,
+            run_id=run_id,
+            order_id=order_id,
+            fill_id=fill_id,
+            event_type=event_type.value,
+            amount=amount,
+            cash_after=cash_after,
+            currency=currency,
+            occurred_at=occurred_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def upsert_positions(
+        self,
+        account_id: int,
+        portfolio: Portfolio,
+        updated_at: date,
+        realized_pnl_instrument_id: int | None = None,
+    ) -> None:
+        existing_rows = {
+            row.instrument_id: row
+            for row in self.session.scalars(
+                select(PaperPositionORM).where(PaperPositionORM.account_id == account_id)
+            ).all()
+        }
+        active_position_ids = set(portfolio.positions)
+        existing_realized_pnl = sum(
+            (row.realized_pnl for row in existing_rows.values()), Decimal("0")
+        )
+        realized_pnl_delta = portfolio.realized_pnl - existing_realized_pnl
+        for position in portfolio.positions.values():
+            existing = existing_rows.get(position.instrument_id)
+            realized_pnl = (
+                Decimal("0")
+                if existing is None
+                else existing.realized_pnl
+            )
+            if position.instrument_id == realized_pnl_instrument_id:
+                realized_pnl += realized_pnl_delta
+            if existing is None:
+                self.session.add(
+                    PaperPositionORM(
+                        account_id=account_id,
+                        instrument_id=position.instrument_id,
+                        symbol=position.symbol,
+                        quantity=position.quantity,
+                        avg_cost=position.avg_cost,
+                        market_price=position.market_price,
+                        realized_pnl=realized_pnl,
+                        updated_at=updated_at,
+                    )
+                )
+                continue
+            existing.symbol = position.symbol
+            existing.quantity = position.quantity
+            existing.avg_cost = position.avg_cost
+            existing.market_price = position.market_price
+            existing.realized_pnl = realized_pnl
+            existing.updated_at = updated_at
+
+        for instrument_id, existing in existing_rows.items():
+            if instrument_id in active_position_ids:
+                continue
+            existing.quantity = 0
+            existing.market_price = Decimal("0")
+            if instrument_id == realized_pnl_instrument_id:
+                existing.realized_pnl += realized_pnl_delta
+            existing.updated_at = updated_at
+
+        self.session.flush()
+
+    def record_snapshot(
+        self,
+        account_id: int,
+        timestamp: date,
+        portfolio: Portfolio,
+    ) -> PortfolioSnapshotORM:
+        row = PortfolioSnapshotORM(
+            account_id=account_id,
+            timestamp=timestamp,
+            equity=portfolio.equity,
+            cash=portfolio.cash,
+            market_value=portfolio.market_value,
+            realized_pnl=portfolio.realized_pnl,
+            unrealized_pnl=sum(
+                (position.unrealized_pnl for position in portfolio.positions.values()),
+                Decimal("0"),
+            ),
+            drawdown=portfolio.drawdown,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row

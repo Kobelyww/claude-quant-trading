@@ -1,7 +1,9 @@
+from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from quant_trading.core.enums import OrderSide, StrategyStatus
 from quant_trading.core.models import OrderIntent
@@ -10,14 +12,35 @@ from quant_trading.risk.engine import RiskEngine
 from quant_trading.risk.rules import MaxOrderValueRule, NoTradeWithoutDataRule, PriceSanityRule, StrategyStatusRule
 from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
-from quant_trading.storage.models import PortfolioSnapshotORM, RiskDecisionORM
+from quant_trading.storage.models import (
+    CashLedgerORM,
+    MarketBarORM,
+    PaperFillORM,
+    PaperOrderORM,
+    PaperPositionORM,
+    PaperRunORM,
+    PortfolioSnapshotORM,
+    RiskDecisionORM,
+)
 
 
-class OneShotBuyStrategy:
-    name = "one_shot_buy"
+@dataclass
+class RecordingBuyStrategy:
+    name: str = "recording_buy"
+    observed: list[tuple[date, Decimal, int]] = field(default_factory=list)
 
     def on_bar(self, bars, portfolio):
         latest = bars[-1]
+        position = portfolio.positions.get(latest.instrument_id)
+        self.observed.append(
+            (
+                latest.timestamp,
+                portfolio.cash,
+                position.quantity if position else 0,
+            )
+        )
+        if position:
+            return []
         return [
             OrderIntent(
                 instrument_id=latest.instrument_id,
@@ -29,42 +52,198 @@ class OneShotBuyStrategy:
         ]
 
 
-def test_paper_tick_persists_snapshot_and_risk_decision(legacy_sqlite_db: Path):
+def make_paper_engine(legacy_sqlite_db: Path):
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
     import_legacy_sqlite(legacy_sqlite_db, engine)
-
-    paper = PaperTradingEngine(
-        engine=engine,
-        initial_cash=Decimal("100000"),
-        risk_engine=RiskEngine(
-            [
-                StrategyStatusRule(),
-                NoTradeWithoutDataRule(),
-                PriceSanityRule(),
-                MaxOrderValueRule(max_order_value=Decimal("100000")),
-            ]
+    return (
+        PaperTradingEngine(
+            engine=engine,
+            initial_cash=Decimal("100000"),
+            risk_engine=RiskEngine(
+                [
+                    StrategyStatusRule(),
+                    NoTradeWithoutDataRule(),
+                    PriceSanityRule(),
+                    MaxOrderValueRule(max_order_value=Decimal("100000")),
+                ]
+            ),
         ),
+        engine,
     )
-    result = paper.run_one_tick(
+
+
+def latest_bar_values(engine):
+    with session_scope(engine) as session:
+        latest = session.scalar(select(MarketBarORM).order_by(MarketBarORM.timestamp.desc()))
+        return (
+            latest.instrument_id,
+            latest.timestamp,
+            latest.open,
+            latest.high,
+            latest.low,
+            latest.close,
+            latest.volume,
+            latest.adjusted,
+            latest.source,
+        )
+
+
+def add_later_bar(engine):
+    (
+        instrument_id,
+        timestamp,
+        open_price,
+        high,
+        low,
+        close,
+        volume,
+        adjusted,
+        source,
+    ) = latest_bar_values(engine)
+    with session_scope(engine) as session:
+        session.add(
+            MarketBarORM(
+                instrument_id=instrument_id,
+                timestamp=timestamp + date.resolution,
+                timeframe="1d",
+                open=open_price + Decimal("1"),
+                high=high + Decimal("1"),
+                low=low + Decimal("1"),
+                close=close + Decimal("1"),
+                volume=volume + Decimal("1"),
+                adjusted=adjusted,
+                source=source,
+            )
+        )
+
+
+def persisted_counts(engine, account_id: int, run_id: int) -> dict[str, int]:
+    with session_scope(engine) as session:
+        return {
+            "orders": session.scalar(
+                select(func.count()).select_from(PaperOrderORM).where(PaperOrderORM.run_id == run_id)
+            ),
+            "fills": session.scalar(
+                select(func.count()).select_from(PaperFillORM).where(PaperFillORM.run_id == run_id)
+            ),
+            "positions": session.scalar(
+                select(func.count())
+                .select_from(PaperPositionORM)
+                .where(PaperPositionORM.account_id == account_id)
+            ),
+            "ledger": session.scalar(
+                select(func.count())
+                .select_from(CashLedgerORM)
+                .where(CashLedgerORM.account_id == account_id)
+            ),
+            "snapshots": session.scalar(
+                select(func.count())
+                .select_from(PortfolioSnapshotORM)
+                .where(PortfolioSnapshotORM.account_id == account_id)
+            ),
+            "risk_decisions": session.scalar(
+                select(func.count())
+                .select_from(RiskDecisionORM)
+                .where(RiskDecisionORM.run_id == run_id)
+            ),
+        }
+
+
+def test_paper_tick_persists_approved_buy_and_is_idempotent(legacy_sqlite_db: Path):
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    strategy = RecordingBuyStrategy()
+    account_id = paper.create_account(
+        name="Task 3 Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
         symbol="000001",
-        strategy=OneShotBuyStrategy(),
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    first = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
         strategy_status=StrategyStatus.APPROVED,
     )
 
     with session_scope(engine) as session:
-        snapshots = session.scalars(
-            select(PortfolioSnapshotORM).where(PortfolioSnapshotORM.account_id == result.account_id)
+        run = session.get(PaperRunORM, run_id)
+        order = session.scalar(select(PaperOrderORM).where(PaperOrderORM.run_id == run_id))
+        fill = session.scalar(select(PaperFillORM).where(PaperFillORM.run_id == run_id))
+        position = session.scalar(
+            select(PaperPositionORM).where(PaperPositionORM.account_id == account_id)
+        )
+        ledger_rows = session.scalars(
+            select(CashLedgerORM)
+            .where(CashLedgerORM.account_id == account_id)
+            .order_by(CashLedgerORM.id)
         ).all()
-        risk_decisions = session.scalars(
-            select(RiskDecisionORM).where(RiskDecisionORM.run_id == result.account_id)
-        ).all()
+        snapshot = session.scalar(
+            select(PortfolioSnapshotORM).where(PortfolioSnapshotORM.account_id == account_id)
+        )
+        risk_decision = session.scalar(select(RiskDecisionORM).where(RiskDecisionORM.run_id == run_id))
 
-    assert result.account_id > 0
-    assert result.snapshot_count == 1
-    assert result.risk_decision_count == len(risk_decisions)
-    assert result.risk_decision_count == 1
-    assert len(snapshots) == 1
-    assert risk_decisions[0].decision == "approved"
-    assert snapshots[0].cash < Decimal("100000")
-    assert snapshots[0].market_value > Decimal("0")
+    assert first.run_id == run_id
+    assert first.account_id == account_id
+    assert first.processed_at == run.last_processed_at
+    assert first.orders_created == 1
+    assert first.orders_filled == 1
+    assert first.orders_rejected == 0
+    assert first.fills_created == 1
+    assert first.snapshot_created is True
+    assert first.risk_decision_count == 1
+    assert first.idempotent_noop is False
+    assert order.status == "filled"
+    assert order.risk_decision == "approved"
+    assert fill.order_id == order.id
+    assert position.quantity == 100
+    assert position.symbol == "000001"
+    assert len(ledger_rows) == 3
+    assert ledger_rows[0].event_type == "initial_deposit"
+    assert ledger_rows[1].event_type == "buy_notional"
+    assert ledger_rows[1].amount == -fill.price * Decimal(fill.quantity)
+    assert ledger_rows[2].event_type == "commission"
+    assert ledger_rows[2].amount == -fill.commission
+    assert snapshot.cash == ledger_rows[-1].cash_after
+    assert snapshot.market_value > Decimal("0")
+    assert risk_decision.order_id == order.id
+    assert risk_decision.decision == "approved"
+
+    counts_after_first = persisted_counts(engine, account_id, run_id)
+    second = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    assert second.run_id == run_id
+    assert second.account_id == account_id
+    assert second.processed_at == first.processed_at
+    assert second.orders_created == 0
+    assert second.orders_filled == 0
+    assert second.orders_rejected == 0
+    assert second.fills_created == 0
+    assert second.snapshot_created is False
+    assert second.risk_decision_count == 0
+    assert second.idempotent_noop is True
+    assert persisted_counts(engine, account_id, run_id) == counts_after_first
+
+    add_later_bar(engine)
+    third = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    assert third.processed_at > first.processed_at
+    assert strategy.observed[-1][1] == ledger_rows[-1].cash_after
+    assert strategy.observed[-1][2] == 100
+    assert third.orders_created == 0
+    assert third.fills_created == 0
+    assert third.snapshot_created is True

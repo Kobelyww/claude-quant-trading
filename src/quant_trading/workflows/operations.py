@@ -41,6 +41,7 @@ def run_ma_cross_backtest(
     order_size: int,
     initial_cash: Decimal,
 ) -> dict:
+    symbol = _validate_symbol(symbol)
     _validate_ma_cross(short_window, long_window, order_size)
     initial_cash = _validate_positive_decimal(initial_cash, "initial_cash")
     backtest = BacktestEngine(
@@ -76,10 +77,14 @@ def create_paper_account(
     trimmed_name = name.strip()
     if not trimmed_name:
         raise ValueError("paper account name is required")
+    if len(trimmed_name) > 128:
+        raise ValueError("name is too long")
     initial_cash = _validate_positive_decimal(initial_cash, "initial_cash")
     normalized_currency = base_currency.strip() if base_currency else "CNY"
     if not normalized_currency:
         normalized_currency = "CNY"
+    if len(normalized_currency) > 16:
+        raise ValueError("base_currency is too long")
 
     paper = _make_paper_engine(engine, initial_cash=initial_cash)
     account_id = paper.create_account(
@@ -104,6 +109,7 @@ def start_ma_cross_paper_run(
     order_size: int,
     max_order_value: Decimal = DEFAULT_MAX_ORDER_VALUE,
 ) -> dict:
+    symbol = _validate_symbol(symbol)
     _validate_ma_cross(short_window, long_window, order_size)
     max_order_value = _validate_positive_decimal(
         max_order_value,
@@ -219,8 +225,19 @@ def _validate_ma_cross(short_window: int, long_window: int, order_size: int) -> 
         raise ValueError("order_size must be positive")
 
 
+def _validate_symbol(symbol: str) -> str:
+    symbol = symbol.strip()
+    if not symbol:
+        raise ValueError("symbol is required")
+    if len(symbol) > 32:
+        raise ValueError("symbol is too long")
+    return symbol
+
+
 def _validate_positive_decimal(value: Decimal, name: str, message: str | None = None) -> Decimal:
     value = Decimal(str(value))
+    if not value.is_finite():
+        raise ValueError(f"{name} must be finite")
     if value <= 0:
         raise ValueError(message or f"{name} must be greater than 0")
     return value

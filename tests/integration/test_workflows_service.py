@@ -172,6 +172,135 @@ def test_workflow_service_rejects_invalid_values(tmp_path: Path):
         )
 
 
+def test_workflow_service_rejects_invalid_string_boundaries(tmp_path: Path):
+    engine = make_engine(f"sqlite+pysqlite:///{tmp_path / 'workflow-string-bounds.sqlite3'}")
+    create_all(engine)
+    account = create_paper_account(engine, name="Boundary Account", initial_cash=Decimal("100000"))
+
+    with pytest.raises(ValueError, match="symbol is required"):
+        run_ma_cross_backtest(
+            engine,
+            symbol="  ",
+            short_window=3,
+            long_window=8,
+            order_size=50,
+            initial_cash=Decimal("100000"),
+        )
+
+    with pytest.raises(ValueError, match="symbol is required"):
+        start_ma_cross_paper_run(
+            engine,
+            account_id=account["account_id"],
+            symbol="  ",
+            short_window=3,
+            long_window=8,
+            order_size=50,
+        )
+
+    with pytest.raises(ValueError, match="symbol is too long"):
+        run_ma_cross_backtest(
+            engine,
+            symbol="1" * 33,
+            short_window=3,
+            long_window=8,
+            order_size=50,
+            initial_cash=Decimal("100000"),
+        )
+
+    with pytest.raises(ValueError, match="symbol is too long"):
+        start_ma_cross_paper_run(
+            engine,
+            account_id=account["account_id"],
+            symbol="1" * 33,
+            short_window=3,
+            long_window=8,
+            order_size=50,
+        )
+
+    with pytest.raises(ValueError, match="name is too long"):
+        create_paper_account(engine, name="A" * 129, initial_cash=Decimal("100000"))
+
+    with pytest.raises(ValueError, match="base_currency is too long"):
+        create_paper_account(
+            engine,
+            name="Oversized Currency",
+            initial_cash=Decimal("100000"),
+            base_currency="X" * 17,
+        )
+
+
+def test_workflow_service_strips_symbols_before_use(legacy_sqlite_db: Path, tmp_path: Path):
+    engine = make_engine(f"sqlite+pysqlite:///{tmp_path / 'workflow-strip-symbol.sqlite3'}")
+    create_all(engine)
+    import_legacy_data(engine, legacy_sqlite_db)
+    account = create_paper_account(engine, name="Strip Symbol", initial_cash=Decimal("100000"))
+
+    backtest = run_ma_cross_backtest(
+        engine,
+        symbol=" 000001 ",
+        short_window=3,
+        long_window=8,
+        order_size=50,
+        initial_cash=Decimal("100000"),
+    )
+    run = start_ma_cross_paper_run(
+        engine,
+        account_id=account["account_id"],
+        symbol=" 000001 ",
+        short_window=3,
+        long_window=8,
+        order_size=50,
+    )
+
+    with session_scope(engine) as session:
+        paper_run = session.get(PaperRunORM, run["run_id"])
+
+    assert backtest["symbol"] == "000001"
+    assert run["symbol"] == "000001"
+    assert paper_run.symbol == "000001"
+
+
+def test_workflow_service_rejects_non_finite_decimals(tmp_path: Path):
+    engine = make_engine(f"sqlite+pysqlite:///{tmp_path / 'workflow-decimal-bounds.sqlite3'}")
+    create_all(engine)
+    account = create_paper_account(engine, name="Finite Account", initial_cash=Decimal("100000"))
+
+    with pytest.raises(ValueError, match="initial_cash must be finite"):
+        create_paper_account(engine, name="NaN Cash", initial_cash=Decimal("NaN"))
+
+    with pytest.raises(ValueError, match="initial_cash must be finite"):
+        run_ma_cross_backtest(
+            engine,
+            symbol="000001",
+            short_window=3,
+            long_window=8,
+            order_size=50,
+            initial_cash=Decimal("Infinity"),
+        )
+
+    with pytest.raises(ValueError, match="max_order_value must be finite"):
+        start_ma_cross_paper_run(
+            engine,
+            account_id=account["account_id"],
+            symbol="000001",
+            short_window=3,
+            long_window=8,
+            order_size=50,
+            max_order_value=Decimal("NaN"),
+        )
+
+    with pytest.raises(ValueError, match="max_order_value must be finite"):
+        start_ma_cross_paper_run(
+            engine,
+            account_id=account["account_id"],
+            symbol="000001",
+            short_window=3,
+            long_window=8,
+            order_size=50,
+            max_order_value=Decimal("Infinity"),
+        )
+
+
 def test_create_paper_account_writes_initial_deposit_ledger(tmp_path: Path):
     engine = make_engine(f"sqlite+pysqlite:///{tmp_path / 'workflow-ledger.sqlite3'}")
     create_all(engine)

@@ -141,8 +141,35 @@ def test_workflow_service_rejects_invalid_values(tmp_path: Path):
             initial_cash=Decimal("100000"),
         )
 
+    with pytest.raises(ValueError, match="order_size must be positive"):
+        run_ma_cross_backtest(
+            engine,
+            symbol="000001",
+            short_window=3,
+            long_window=8,
+            order_size=0,
+            initial_cash=Decimal("100000"),
+        )
+
     with pytest.raises(ValueError, match="initial_cash must be greater than 0"):
         create_paper_account(engine, name="Invalid Cash", initial_cash=Decimal("0"))
+
+    account = create_paper_account(
+        engine,
+        name="Invalid Risk Config",
+        initial_cash=Decimal("100000"),
+    )
+
+    with pytest.raises(ValueError, match="max_order_value must be positive"):
+        start_ma_cross_paper_run(
+            engine,
+            account_id=account["account_id"],
+            symbol="000001",
+            short_window=3,
+            long_window=8,
+            order_size=50,
+            max_order_value=Decimal("0"),
+        )
 
 
 def test_create_paper_account_writes_initial_deposit_ledger(tmp_path: Path):

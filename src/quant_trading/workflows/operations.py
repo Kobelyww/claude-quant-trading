@@ -105,7 +105,11 @@ def start_ma_cross_paper_run(
     max_order_value: Decimal = DEFAULT_MAX_ORDER_VALUE,
 ) -> dict:
     _validate_ma_cross(short_window, long_window, order_size)
-    max_order_value = _validate_positive_decimal(max_order_value, "max_order_value")
+    max_order_value = _validate_positive_decimal(
+        max_order_value,
+        "max_order_value",
+        message="max_order_value must be positive",
+    )
     paper = _make_paper_engine(engine, initial_cash=Decimal("0"), max_order_value=max_order_value)
     run_id = paper.start_run(
         account_id=account_id,
@@ -173,6 +177,7 @@ def _load_paper_run_command(engine: Engine, run_id: int) -> tuple[MACrossStrateg
     max_order_value = _validate_positive_decimal(
         Decimal(str(risk_config.get("max_order_value", DEFAULT_MAX_ORDER_VALUE))),
         "max_order_value",
+        message="max_order_value must be positive",
     )
     return (
         MACrossStrategy(
@@ -211,13 +216,13 @@ def _validate_ma_cross(short_window: int, long_window: int, order_size: int) -> 
     if long_window <= short_window:
         raise ValueError("long_window must be greater than short_window")
     if order_size <= 0:
-        raise ValueError("order_size must be greater than 0")
+        raise ValueError("order_size must be positive")
 
 
-def _validate_positive_decimal(value: Decimal, name: str) -> Decimal:
+def _validate_positive_decimal(value: Decimal, name: str, message: str | None = None) -> Decimal:
     value = Decimal(str(value))
     if value <= 0:
-        raise ValueError(f"{name} must be greater than 0")
+        raise ValueError(message or f"{name} must be greater than 0")
     return value
 
 

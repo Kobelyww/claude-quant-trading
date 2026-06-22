@@ -3,11 +3,14 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql
 
 from quant_trading.core.enums import OrderSide, StrategyStatus
 from quant_trading.core.models import OrderIntent
 from quant_trading.paper.engine import PaperTradingEngine
+from quant_trading.paper.repositories import PaperStateRepository
 from quant_trading.risk.engine import RiskEngine
 from quant_trading.risk.rules import MaxOrderValueRule, NoTradeWithoutDataRule, PriceSanityRule, StrategyStatusRule
 from quant_trading.storage.db import create_all, make_engine, session_scope
@@ -86,10 +89,10 @@ def latest_bar_values(engine):
             latest.volume,
             latest.adjusted,
             latest.source,
-        )
+    )
 
 
-def add_later_bar(engine):
+def add_later_bar(engine) -> Decimal:
     (
         instrument_id,
         timestamp,
@@ -101,6 +104,7 @@ def add_later_bar(engine):
         adjusted,
         source,
     ) = latest_bar_values(engine)
+    later_close = close + Decimal("1")
     with session_scope(engine) as session:
         session.add(
             MarketBarORM(
@@ -110,12 +114,13 @@ def add_later_bar(engine):
                 open=open_price + Decimal("1"),
                 high=high + Decimal("1"),
                 low=low + Decimal("1"),
-                close=close + Decimal("1"),
+                close=later_close,
                 volume=volume + Decimal("1"),
                 adjusted=adjusted,
                 source=source,
             )
         )
+    return later_close
 
 
 def persisted_counts(engine, account_id: int, run_id: int) -> dict[str, int]:
@@ -234,12 +239,22 @@ def test_paper_tick_persists_approved_buy_and_is_idempotent(legacy_sqlite_db: Pa
     assert second.idempotent_noop is True
     assert persisted_counts(engine, account_id, run_id) == counts_after_first
 
-    add_later_bar(engine)
+    later_close = add_later_bar(engine)
     third = paper.run_one_tick(
         run_id=run_id,
         strategy=strategy,
         strategy_status=StrategyStatus.APPROVED,
     )
+
+    with session_scope(engine) as session:
+        marked_position = session.scalar(
+            select(PaperPositionORM).where(PaperPositionORM.account_id == account_id)
+        )
+        latest_snapshot = session.scalar(
+            select(PortfolioSnapshotORM)
+            .where(PortfolioSnapshotORM.account_id == account_id)
+            .order_by(PortfolioSnapshotORM.timestamp.desc())
+        )
 
     assert third.processed_at > first.processed_at
     assert strategy.observed[-1][1] == ledger_rows[-1].cash_after
@@ -247,3 +262,54 @@ def test_paper_tick_persists_approved_buy_and_is_idempotent(legacy_sqlite_db: Pa
     assert third.orders_created == 0
     assert third.fills_created == 0
     assert third.snapshot_created is True
+    assert marked_position.market_price == later_close
+    assert latest_snapshot.market_value == later_close * Decimal("100")
+
+
+def test_run_one_tick_rejects_strategy_name_mismatch(legacy_sqlite_db: Path):
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    account_id = paper.create_account(
+        name="Task 3 Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=RecordingBuyStrategy(name="recording_buy"),
+        strategy_name="recording_buy",
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with pytest.raises(ValueError, match="strategy_name must match strategy.name"):
+        paper.run_one_tick(
+            run_id=run_id,
+            strategy=RecordingBuyStrategy(name="other_strategy"),
+            strategy_status=StrategyStatus.APPROVED,
+        )
+
+    with session_scope(engine) as session:
+        run = session.get(PaperRunORM, run_id)
+        order_count = session.scalar(
+            select(func.count()).select_from(PaperOrderORM).where(PaperOrderORM.run_id == run_id)
+        )
+        snapshot_count = session.scalar(
+            select(func.count())
+            .select_from(PortfolioSnapshotORM)
+            .where(PortfolioSnapshotORM.account_id == account_id)
+        )
+
+    assert run.last_processed_at is None
+    assert order_count == 0
+    assert snapshot_count == 0
+
+
+def test_load_run_query_uses_row_lock_for_tick_idempotency():
+    sql = str(
+        PaperStateRepository.load_run_statement(1).compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "FOR UPDATE" in sql

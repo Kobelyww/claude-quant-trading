@@ -79,10 +79,14 @@ class PaperStateRepository:
         return run
 
     def load_run(self, run_id: int) -> PaperRunORM:
-        run = self.session.get(PaperRunORM, run_id)
+        run = self.session.scalar(self.load_run_statement(run_id))
         if run is None:
             raise ValueError(f"paper run not found: {run_id}")
         return run
+
+    @staticmethod
+    def load_run_statement(run_id: int):
+        return select(PaperRunORM).where(PaperRunORM.id == run_id).with_for_update()
 
     def latest_cash(self, account_id: int) -> Decimal:
         row = self.session.scalar(

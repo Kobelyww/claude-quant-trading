@@ -99,6 +99,8 @@ class PaperTradingEngine:
             run = repository.load_run(run_id)
             if run.status != PaperRunStatus.RUNNING.value:
                 raise ValueError(f"paper run is not running: {run.id}")
+            if getattr(strategy, "name", run.strategy_name) != run.strategy_name:
+                raise ValueError("strategy_name must match strategy.name")
             account = session.get(PaperAccountORM, run.account_id)
             if account is None:
                 raise ValueError(f"paper account not found: {run.account_id}")
@@ -123,6 +125,9 @@ class PaperTradingEngine:
                 )
 
             portfolio = repository.load_portfolio(run.account_id)
+            latest_position = portfolio.positions.get(latest.instrument_id)
+            if latest_position is not None:
+                latest_position.market_price = latest.close
             orders_created = 0
             orders_filled = 0
             orders_rejected = 0
@@ -173,13 +178,13 @@ class PaperTradingEngine:
                     currency=account.base_currency,
                 )
                 portfolio = updated_portfolio
-                repository.upsert_positions(
-                    run.account_id,
-                    portfolio,
-                    latest.timestamp,
-                    realized_pnl_instrument_id=fill.instrument_id,
-                )
 
+            repository.upsert_positions(
+                run.account_id,
+                portfolio,
+                latest.timestamp,
+                realized_pnl_instrument_id=latest.instrument_id,
+            )
             repository.record_snapshot(run.account_id, latest.timestamp, portfolio)
             run.last_processed_at = latest.timestamp
             session.flush()

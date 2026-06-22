@@ -1,7 +1,7 @@
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from quant_trading.core.enums import StrategyStatus
 from quant_trading.jobs.tasks import run_paper_tick_task
@@ -15,8 +15,44 @@ from quant_trading.risk.rules import (
 )
 from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
-from quant_trading.storage.models import PaperFillORM
+from quant_trading.storage.models import (
+    CashLedgerORM,
+    PaperFillORM,
+    PaperOrderORM,
+    PortfolioSnapshotORM,
+    RiskDecisionORM,
+)
 from quant_trading.strategy.builtin.ma_cross import MACrossStrategy
+
+
+def persisted_counts(engine, account_id: int, run_id: int) -> dict[str, int]:
+    with session_scope(engine) as session:
+        return {
+            "orders": session.scalar(
+                select(func.count()).select_from(PaperOrderORM).where(PaperOrderORM.run_id == run_id)
+            ),
+            "fills": session.scalar(
+                select(func.count()).select_from(PaperFillORM).where(PaperFillORM.run_id == run_id)
+            ),
+            "snapshots": session.scalar(
+                select(func.count())
+                .select_from(PortfolioSnapshotORM)
+                .where(
+                    PortfolioSnapshotORM.account_id == account_id,
+                    PortfolioSnapshotORM.run_id == run_id,
+                )
+            ),
+            "risk_decisions": session.scalar(
+                select(func.count())
+                .select_from(RiskDecisionORM)
+                .where(RiskDecisionORM.run_id == run_id)
+            ),
+            "ledger": session.scalar(
+                select(func.count())
+                .select_from(CashLedgerORM)
+                .where(CashLedgerORM.account_id == account_id)
+            ),
+        }
 
 
 def test_run_paper_tick_task_runs_existing_paper_run(legacy_sqlite_db: Path, tmp_path: Path):
@@ -61,3 +97,16 @@ def test_run_paper_tick_task_runs_existing_paper_run(legacy_sqlite_db: Path, tmp
     assert result["idempotent_noop"] is False
     assert result["snapshot_created"] is True
     assert len(fills) == result["fills_created"]
+
+    counts_after_first = persisted_counts(engine, account_id, run_id)
+    second = run_paper_tick_task(database_url=database_url, run_id=run_id)
+
+    assert second["idempotent_noop"] is True
+    assert second["snapshot_created"] is False
+    assert second["orders_created"] == 0
+    assert second["orders_filled"] == 0
+    assert second["orders_rejected"] == 0
+    assert second["fills_created"] == 0
+    assert second["risk_decision_count"] == 0
+    assert second["processed_at"] == result["processed_at"]
+    assert persisted_counts(engine, account_id, run_id) == counts_after_first

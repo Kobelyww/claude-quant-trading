@@ -62,6 +62,7 @@ class PaperStateRepository:
         account_id: int,
         symbol: str,
         strategy_name: str,
+        strategy_config: dict | None,
         risk_config: dict | None,
     ) -> PaperRunORM:
         run = PaperRunORM(
@@ -69,7 +70,7 @@ class PaperStateRepository:
             strategy_name=strategy_name,
             symbol=symbol,
             universe_config=_json_dumps({"symbols": [symbol]}),
-            strategy_config=_json_dumps({"strategy_name": strategy_name}),
+            strategy_config=_json_dumps(strategy_config or {"strategy_name": strategy_name}),
             risk_config=_json_dumps(risk_config or {}),
             status=PaperRunStatus.RUNNING.value,
             started_at=datetime.utcnow(),
@@ -87,6 +88,16 @@ class PaperStateRepository:
     @staticmethod
     def load_run_statement(run_id: int):
         return select(PaperRunORM).where(PaperRunORM.id == run_id).with_for_update()
+
+    def load_account(self, account_id: int) -> PaperAccountORM:
+        account = self.session.scalar(self.load_account_statement(account_id))
+        if account is None:
+            raise ValueError(f"paper account not found: {account_id}")
+        return account
+
+    @staticmethod
+    def load_account_statement(account_id: int):
+        return select(PaperAccountORM).where(PaperAccountORM.id == account_id).with_for_update()
 
     def latest_cash(self, account_id: int) -> Decimal:
         row = self.session.scalar(

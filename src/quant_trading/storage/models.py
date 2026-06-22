@@ -234,8 +234,12 @@ class RiskDecisionORM(Base):
     __tablename__ = "risk_decisions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_runs.id"), nullable=True, index=True
+    )
+    order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_orders.id"), nullable=True, index=True
+    )
     decision: Mapped[str] = mapped_column(String(32))
     rule_name: Mapped[str] = mapped_column(String(128))
     message: Mapped[str] = mapped_column(String(512))

@@ -17,7 +17,6 @@ from quant_trading.portfolio.accounting import apply_fill
 from quant_trading.paper.repositories import PaperStateRepository
 from quant_trading.risk.engine import RiskEngine
 from quant_trading.storage.db import session_scope
-from quant_trading.storage.models import PaperAccountORM
 from quant_trading.storage.repositories import MarketDataRepository
 from quant_trading.strategy.base import Strategy
 
@@ -81,12 +80,13 @@ class PaperTradingEngine:
         if getattr(strategy, "name", strategy_name) != strategy_name:
             raise ValueError("strategy_name must match strategy.name")
         with session_scope(self.engine) as session:
-            if session.get(PaperAccountORM, account_id) is None:
-                raise ValueError(f"paper account not found: {account_id}")
-            run = PaperStateRepository(session).start_run(
+            repository = PaperStateRepository(session)
+            repository.load_account(account_id)
+            run = repository.start_run(
                 account_id=account_id,
                 symbol=symbol,
                 strategy_name=strategy_name,
+                strategy_config=self._strategy_config(strategy, strategy_name),
                 risk_config=risk_config,
             )
             return run.id
@@ -101,9 +101,7 @@ class PaperTradingEngine:
                 raise ValueError(f"paper run is not running: {run.id}")
             if getattr(strategy, "name", run.strategy_name) != run.strategy_name:
                 raise ValueError("strategy_name must match strategy.name")
-            account = session.get(PaperAccountORM, run.account_id)
-            if account is None:
-                raise ValueError(f"paper account not found: {run.account_id}")
+            account = repository.load_account(run.account_id)
 
             bars = MarketDataRepository(session).list_bars(run.symbol)
             if not bars:
@@ -236,6 +234,7 @@ class PaperTradingEngine:
             currency=currency,
             occurred_at=fill.filled_at,
         )
+
         repository.append_cash_ledger(
             account_id=account_id,
             run_id=run_id,
@@ -247,3 +246,15 @@ class PaperTradingEngine:
             currency=currency,
             occurred_at=fill.filled_at,
         )
+
+    def _strategy_config(self, strategy: Strategy, strategy_name: str) -> dict:
+        config = {"strategy_name": strategy_name}
+        if strategy_name == "ma_cross":
+            config.update(
+                {
+                    "short_window": strategy.short_window,
+                    "long_window": strategy.long_window,
+                    "order_size": strategy.order_size,
+                }
+            )
+        return config

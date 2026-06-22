@@ -1,4 +1,5 @@
 from decimal import Decimal
+import json
 from pathlib import Path
 
 from quant_trading.backtest.engine import BacktestEngine
@@ -11,8 +12,9 @@ from quant_trading.risk.rules import (
     PriceSanityRule,
     StrategyStatusRule,
 )
-from quant_trading.storage.db import create_all, make_engine
+from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
+from quant_trading.storage.models import PaperRunORM
 from quant_trading.strategy.builtin.ma_cross import MACrossStrategy
 
 
@@ -48,6 +50,7 @@ def run_ma_cross_backtest_task(database_url: str, symbol: str = "000001") -> dic
 
 def run_paper_tick_task(database_url: str, run_id: int) -> dict:
     engine = make_engine(database_url)
+    strategy = _load_paper_strategy_for_job(engine, run_id)
     paper = PaperTradingEngine(
         engine=engine,
         initial_cash=Decimal("100000"),
@@ -62,7 +65,7 @@ def run_paper_tick_task(database_url: str, run_id: int) -> dict:
     )
     result = paper.run_one_tick(
         run_id=run_id,
-        strategy=MACrossStrategy(short_window=5, long_window=20, order_size=100),
+        strategy=strategy,
         strategy_status=StrategyStatus.APPROVED,
     )
     return {
@@ -77,3 +80,21 @@ def run_paper_tick_task(database_url: str, run_id: int) -> dict:
         "risk_decision_count": result.risk_decision_count,
         "idempotent_noop": result.idempotent_noop,
     }
+
+
+def _load_paper_strategy_for_job(engine, run_id: int):
+    with session_scope(engine) as session:
+        run = session.get(PaperRunORM, run_id)
+        if run is None:
+            raise ValueError(f"paper run not found: {run_id}")
+        strategy_name = run.strategy_name
+        strategy_config = json.loads(run.strategy_config or "{}")
+
+    if strategy_name != "ma_cross":
+        raise ValueError(f"unsupported paper strategy for job: {strategy_name}")
+
+    return MACrossStrategy(
+        short_window=int(strategy_config.get("short_window", 5)),
+        long_window=int(strategy_config.get("long_window", 20)),
+        order_size=int(strategy_config.get("order_size", 100)),
+    )

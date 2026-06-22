@@ -11,6 +11,7 @@ from quant_trading.storage.models import (
     PaperOrderORM,
     PaperPositionORM,
     PaperRunORM,
+    RiskDecisionORM,
 )
 
 
@@ -93,6 +94,15 @@ def test_paper_persistence_tables_round_trip():
                 occurred_at=date(2026, 1, 2),
             )
         )
+        session.add(
+            RiskDecisionORM(
+                run_id=run.id,
+                order_id=order.id,
+                decision="approved",
+                rule_name="strategy_status",
+                message="strategy approved",
+            )
+        )
 
     with session_scope(engine) as session:
         loaded_run = session.scalar(select(PaperRunORM).where(PaperRunORM.symbol == "000001"))
@@ -100,9 +110,22 @@ def test_paper_persistence_tables_round_trip():
         loaded_fill = session.scalar(select(PaperFillORM).where(PaperFillORM.order_id == loaded_order.id))
         loaded_position = session.scalar(select(PaperPositionORM).where(PaperPositionORM.account_id == loaded_run.account_id))
         loaded_ledger = session.scalar(select(CashLedgerORM).where(CashLedgerORM.fill_id == loaded_fill.id))
+        loaded_risk_decision = session.scalar(
+            select(RiskDecisionORM).where(RiskDecisionORM.order_id == loaded_order.id)
+        )
 
     assert loaded_run.status == "running"
     assert loaded_order.status == "filled"
     assert loaded_fill.price == Decimal("10.200000")
     assert loaded_position.quantity == 100
     assert loaded_ledger.cash_after == Decimal("98980.000000")
+    assert loaded_risk_decision.run_id == loaded_run.id
+    assert loaded_risk_decision.decision == "approved"
+    assert {
+        fk.column.table.name
+        for fk in RiskDecisionORM.__table__.c.run_id.foreign_keys
+    } == {"paper_runs"}
+    assert {
+        fk.column.table.name
+        for fk in RiskDecisionORM.__table__.c.order_id.foreign_keys
+    } == {"paper_orders"}

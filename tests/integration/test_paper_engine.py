@@ -352,6 +352,17 @@ def test_load_run_query_uses_row_lock_for_tick_idempotency():
     assert "FOR UPDATE" in sql
 
 
+def test_load_account_query_uses_row_lock_for_account_state_serialization():
+    sql = str(
+        PaperStateRepository.load_account_statement(1).compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "FOR UPDATE" in sql
+
+
 def test_rejected_strategy_status_creates_order_and_risk_decision_without_fill(
     legacy_sqlite_db: Path,
 ):

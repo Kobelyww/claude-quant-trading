@@ -16,6 +16,7 @@ from quant_trading.storage.models import (
     PaperPositionORM,
     PaperRunORM,
 )
+from quant_trading.strategy.builtin.ma_cross import MACrossStrategy
 
 
 class NoopStrategy:
@@ -92,6 +93,34 @@ def test_start_run_links_account_strategy_symbol_and_status():
     assert json.loads(run.universe_config) == {"symbols": ["000001"]}
     assert json.loads(run.strategy_config) == {"strategy_name": "noop"}
     assert json.loads(run.risk_config) == {"max_order_value": "100000"}
+
+
+def test_start_run_persists_ma_cross_strategy_parameters():
+    paper, engine = make_paper_engine()
+    account_id = paper.create_account(
+        name="Stage 2 Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    strategy = MACrossStrategy(short_window=3, long_window=8, order_size=250)
+
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name="ma_cross",
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with session_scope(engine) as session:
+        run = session.get(PaperRunORM, run_id)
+
+    assert json.loads(run.strategy_config) == {
+        "strategy_name": "ma_cross",
+        "short_window": 3,
+        "long_window": 8,
+        "order_size": 250,
+    }
 
 
 def test_start_run_rejects_strategy_name_mismatch():

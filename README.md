@@ -11,13 +11,12 @@ This milestone turns the project into a testable service skeleton:
 - Importing legacy A-share daily data from `legacy/django_app/db.sqlite3`.
 - Storing instruments, market bars, backtest runs, paper snapshots, and risk decisions in SQLAlchemy models.
 - Running a portfolio-style moving-average crossover backtest with commission and slippage.
-- Running a one-tick, risk-gated paper trading simulation with approved strategies and simulated fills.
+- Running a persistent, risk-gated paper trading account with simulated orders, fills, positions, cash ledger, and snapshots.
 - Reading health, instruments, backtests, and paper snapshots through FastAPI.
 - Running import and backtest work through job task functions that can be wired to RQ workers.
 
 This version does not place real broker or exchange orders. Paper trading is still a research
-simulation: the current tick creates a fresh paper account per run and persists snapshots/risk
-decisions, not a full order/fill/cash ledger yet.
+simulation with local simulated orders, fills, positions, cash ledger entries, and snapshots.
 
 ## Project Layout
 
@@ -69,6 +68,8 @@ API endpoints:
 http://localhost:8000/health
 http://localhost:8000/instruments
 http://localhost:8000/backtests
+http://localhost:8000/paper/accounts
+http://localhost:8000/paper/runs
 http://localhost:8000/paper/snapshots
 ```
 
@@ -115,6 +116,8 @@ legacy/django_app/db.sqlite3
 ```
 
 The importer maps `data_center_symbol` to `instruments` and `data_center_marketdata` to `market_bars`.
+Existing SQLite databases are not automatically altered by `create_all()`; upgrade old databases with
+migrations for new paper tables/columns, especially `portfolio_snapshots.run_id`.
 
 Run the importer through the job task or call `import_legacy_sqlite()` from
 `quant_trading.storage.migrate_legacy` in tests and local scripts.

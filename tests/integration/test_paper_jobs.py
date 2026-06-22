@@ -25,6 +25,7 @@ from quant_trading.storage.models import (
     RiskDecisionORM,
 )
 from quant_trading.strategy.builtin.ma_cross import MACrossStrategy
+from quant_trading.workflows import operations
 
 
 def persisted_counts(engine, account_id: int, run_id: int) -> dict[str, int]:
@@ -165,7 +166,7 @@ def test_run_paper_tick_task_uses_persisted_ma_cross_config(
                 order_size=order_size,
             )
 
-    monkeypatch.setattr(tasks, "MACrossStrategy", SpyMACrossStrategy)
+    monkeypatch.setattr(operations, "MACrossStrategy", SpyMACrossStrategy)
 
     run_paper_tick_task(database_url=database_url, run_id=run_id)
 

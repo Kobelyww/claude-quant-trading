@@ -7,6 +7,7 @@ from quant_trading.core.enums import RiskDecisionType, StrategyStatus
 from quant_trading.core.models import Portfolio
 from quant_trading.execution.simulator import SimulatedBroker
 from quant_trading.portfolio.accounting import apply_fill
+from quant_trading.paper.repositories import PaperStateRepository
 from quant_trading.risk.engine import RiskEngine
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import PaperAccountORM, PortfolioSnapshotORM, RiskDecisionORM
@@ -34,6 +35,45 @@ class PaperTradingEngine:
         self.initial_cash = initial_cash
         self.risk_engine = risk_engine
         self.broker = SimulatedBroker(commission_rate=commission_rate, slippage_rate=slippage_rate)
+
+    def create_account(
+        self,
+        name: str,
+        initial_cash: Decimal | None = None,
+        base_currency: str = "CNY",
+    ) -> int:
+        cash = initial_cash if initial_cash is not None else self.initial_cash
+        with session_scope(self.engine) as session:
+            account = PaperStateRepository(session).create_account(
+                name=name,
+                initial_cash=cash,
+                base_currency=base_currency,
+            )
+            return account.id
+
+    def start_run(
+        self,
+        account_id: int,
+        symbol: str,
+        strategy: Strategy,
+        strategy_name: str,
+        strategy_status: StrategyStatus,
+        risk_config: dict | None = None,
+    ) -> int:
+        if strategy_status is not StrategyStatus.APPROVED:
+            raise ValueError("paper run requires an approved strategy")
+        if not strategy_name:
+            raise ValueError("strategy_name is required")
+        with session_scope(self.engine) as session:
+            if session.get(PaperAccountORM, account_id) is None:
+                raise ValueError(f"paper account not found: {account_id}")
+            run = PaperStateRepository(session).start_run(
+                account_id=account_id,
+                symbol=symbol,
+                strategy_name=strategy_name,
+                risk_config=risk_config,
+            )
+            return run.id
 
     def run_one_tick(
         self, symbol: str, strategy: Strategy, strategy_status: StrategyStatus

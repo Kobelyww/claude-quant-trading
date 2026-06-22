@@ -54,3 +54,26 @@ class RiskDecisionType(StrEnum):
     REJECTED = "rejected"
     REDUCED = "reduced"
     HALTED = "halted"
+
+
+class PaperRunStatus(StrEnum):
+    CREATED = "created"
+    RUNNING = "running"
+    PAUSED = "paused"
+    STOPPED = "stopped"
+    ERROR = "error"
+
+
+class PaperOrderStatus(StrEnum):
+    CREATED = "created"
+    RISK_REJECTED = "risk_rejected"
+    FILLED = "filled"
+    SKIPPED = "skipped"
+
+
+class CashLedgerEventType(StrEnum):
+    INITIAL_DEPOSIT = "initial_deposit"
+    BUY_NOTIONAL = "buy_notional"
+    SELL_NOTIONAL = "sell_notional"
+    COMMISSION = "commission"
+    MANUAL_ADJUSTMENT = "manual_adjustment"

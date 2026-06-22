@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     Date,
@@ -123,6 +123,93 @@ class PaperAccountORM(Base):
     base_currency: Mapped[str] = mapped_column(String(16), default="CNY")
     initial_cash: Mapped[float] = mapped_column(Numeric(18, 6))
     status: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PaperRunORM(Base):
+    __tablename__ = "paper_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("paper_accounts.id"), index=True)
+    strategy_name: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    universe_config: Mapped[str] = mapped_column(String(2048), default="{}")
+    strategy_config: Mapped[str] = mapped_column(String(2048), default="{}")
+    risk_config: Mapped[str] = mapped_column(String(2048), default="{}")
+    status: Mapped[str] = mapped_column(String(32), default="created", index=True)
+    last_processed_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PaperOrderORM(Base):
+    __tablename__ = "paper_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("paper_runs.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("paper_accounts.id"), index=True)
+    instrument_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    side: Mapped[str] = mapped_column(String(16))
+    order_type: Mapped[str] = mapped_column(String(16), default="market")
+    quantity: Mapped[int] = mapped_column(Integer)
+    limit_price: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    reason: Mapped[str] = mapped_column(String(256), default="")
+    status: Mapped[str] = mapped_column(String(32), default="created", index=True)
+    risk_decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    submitted_at: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PaperFillORM(Base):
+    __tablename__ = "paper_fills"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("paper_runs.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("paper_accounts.id"), index=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("paper_orders.id"), index=True)
+    instrument_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    side: Mapped[str] = mapped_column(String(16))
+    quantity: Mapped[int] = mapped_column(Integer)
+    price: Mapped[float] = mapped_column(Numeric(18, 6))
+    commission: Mapped[float] = mapped_column(Numeric(18, 6))
+    slippage: Mapped[float] = mapped_column(Numeric(18, 6))
+    filled_at: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PaperPositionORM(Base):
+    __tablename__ = "paper_positions"
+    __table_args__ = (
+        UniqueConstraint("account_id", "instrument_id", name="uq_paper_position_account_instrument"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("paper_accounts.id"), index=True)
+    instrument_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    avg_cost: Mapped[float] = mapped_column(Numeric(18, 6), default=0)
+    market_price: Mapped[float] = mapped_column(Numeric(18, 6), default=0)
+    realized_pnl: Mapped[float] = mapped_column(Numeric(18, 6), default=0)
+    updated_at: Mapped[date] = mapped_column(Date)
+
+
+class CashLedgerORM(Base):
+    __tablename__ = "cash_ledger"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("paper_accounts.id"), index=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("paper_runs.id"), nullable=True, index=True)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("paper_orders.id"), nullable=True, index=True)
+    fill_id: Mapped[int | None] = mapped_column(ForeignKey("paper_fills.id"), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(18, 6))
+    cash_after: Mapped[float] = mapped_column(Numeric(18, 6))
+    currency: Mapped[str] = mapped_column(String(16), default="CNY")
+    occurred_at: Mapped[date] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

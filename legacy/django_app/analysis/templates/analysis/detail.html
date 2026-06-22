@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block title %}分析报告 #{{ report.id }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4>{{ report.symbol.code }} — {{ report.get_report_type_display }}</h4>
+    <small class="text-muted">{{ report.created_at|date:"Y-m-d H:i" }}</small>
+</div>
+<div class="card p-4"><div id="reportContent" class="markdown-body"></div></div>
+<a href="{% url 'analysis_list' %}" class="btn btn-secondary mt-3">返回</a>
+{% endblock %}
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var content = "{{ report.content|safe|escapejs }}";
+    document.getElementById('reportContent').innerHTML = marked.parse(content);
+});
+</script>
+<style>.markdown-body h2{font-size:1.25rem;margin-top:1.5rem;color:#1a1a2e}.markdown-body h3{font-size:1.1rem}.markdown-body p{line-height:1.8}</style>
+{% endblock %}

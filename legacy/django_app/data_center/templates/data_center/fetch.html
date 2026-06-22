@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}拉取数据 - {{ symbol.code }}{% endblock %}
+{% block content %}
+<h4><i class="bi bi-cloud-download"></i> 拉取 {{ symbol.code }} ({{ symbol.get_market_display }}) 数据</h4>
+<div class="card p-4">
+    <p>当前数据: <strong>{{ data_count }} 条</strong>{% if date_first %} ({{ date_first|date:"Y-m-d" }} ~ {{ date_last|date:"Y-m-d" }}){% endif %}</p>
+    <form method="post">{% csrf_token %}
+        <div class="row g-3 mb-3">
+            <div class="col-md-4"><label class="form-label">开始日期</label><input type="date" name="start_date" class="form-control" value="{% if date_last %}{{ date_last|date:'Y-m-d' }}{% else %}2025-05-01{% endif %}"></div>
+            <div class="col-md-4"><label class="form-label">结束日期</label><input type="date" name="end_date" class="form-control" value="{% now 'Y-m-d' %}"></div>
+            <div class="col-md-4 d-flex align-items-end"><button type="submit" class="btn btn-primary"><i class="bi bi-download"></i> 开始拉取</button></div>
+        </div>
+    </form>
+    <small class="text-muted">不填日期则默认拉取近一年数据。拉取将覆盖现有数据。</small>
+</div>
+<a href="{% url 'data_list' %}" class="btn btn-secondary mt-3">返回</a>
+{% endblock %}

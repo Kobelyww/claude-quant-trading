@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% block title %}AI 策略生成{% endblock %}
+{% block content %}
+<h4><i class="bi bi-robot"></i> AI 策略生成</h4>
+<div class="card p-4"><form method="post">{% csrf_token %}
+    <div class="mb-3"><label class="form-label">描述你的交易思路 *</label><textarea name="description" class="form-control" rows="4" placeholder="例如：当5日均线上穿20日均线且成交量大于50日均量时买入，当价格跌破10日均线时卖出" required></textarea></div>
+    <button type="submit" class="btn btn-primary"><i class="bi bi-stars"></i> 生成策略代码</button>
+    <a href="{% url 'strategy_list' %}" class="btn btn-secondary ms-2">返回</a>
+    <small class="text-muted ms-3">使用 DeepSeek API 生成</small>
+</form></div>
+{% endblock %}

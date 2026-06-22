@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% block title %}编辑策略{% endblock %}
+{% block content %}
+<h4><i class="bi bi-pencil"></i> 编辑 {{ strategy.name }}</h4>
+<div class="card p-4"><form method="post">{% csrf_token %}
+    <div class="mb-3"><label class="form-label">名称</label><input type="text" name="name" value="{{ strategy.name }}" class="form-control"></div>
+    <div class="mb-3"><label class="form-label">参数 (JSON)</label><textarea name="params_json" class="form-control" rows="4" style="font-family:monospace">{{ strategy.params|safe }}</textarea></div>
+    <div class="mb-3"><label class="form-label">策略代码</label><textarea name="code" class="form-control" rows="8" style="font-family:monospace">{{ strategy.code }}</textarea></div>
+    <button type="submit" class="btn btn-primary">保存</button><a href="{% url 'strategy_detail' strategy.id %}" class="btn btn-secondary ms-2">取消</a>
+</form></div>
+{% endblock %}

@@ -1,0 +1,117 @@
+{% extends "base.html" %}{% block title %}回测详情 #{{ run.id }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4>回测 #{{ run.id }}: {{ run.symbol.code }} — {{ run.strategy.name }}</h4>
+    <span class="badge fs-6 {% if run.status == 'done' %}bg-success{% elif run.status == 'running' %}bg-warning{% elif run.status == 'failed' %}bg-danger{% else %}bg-secondary{% endif %}" id="statusBadge">{{ run.get_status_display }}</span>
+</div>
+
+{% if run.status == 'failed' %}
+<div class="alert alert-danger">{{ run.error_message }}</div>
+{% endif %}
+
+<div id="resultSection" {% if run.status != 'done' %}style="display:none"{% endif %}>
+    <div class="row mb-4" id="metricsRow">
+        <div class="col-md-3"><div class="card p-3 text-center"><small class="text-muted">总收益率</small><h4 class="mb-0" id="mReturn">-</h4></div></div>
+        <div class="col-md-3"><div class="card p-3 text-center"><small class="text-muted">夏普比率</small><h4 class="mb-0" id="mSharpe">-</h4></div></div>
+        <div class="col-md-3"><div class="card p-3 text-center"><small class="text-muted">最大回撤</small><h4 class="mb-0" id="mMDD">-</h4></div></div>
+        <div class="col-md-3"><div class="card p-3 text-center"><small class="text-muted">胜率</small><h4 class="mb-0" id="mWinRate">-</h4></div></div>
+    </div>
+    <div class="card p-3 mb-4"><div id="equityChart" style="height:400px"></div></div>
+    <div class="row">
+        <div class="col-md-6 mb-4"><div class="card p-3"><div id="drawdownChart" style="height:300px"></div></div></div>
+        <div class="col-md-6 mb-4"><div class="card p-3"><h6>交易明细</h6><div id="tradesTable" style="max-height:300px;overflow:auto"></div></div></div>
+    </div>
+</div>
+
+<div id="loadingSection" class="text-center py-5" {% if run.status == 'done' or run.status == 'failed' %}style="display:none"{% endif %}>
+    <div class="spinner-border text-primary mb-3"></div><p>回测运行中...</p>
+</div>
+
+<a href="{% url 'backtest_list' %}" class="btn btn-secondary mt-3">返回</a>
+{% endblock %}
+{% block extra_js %}
+<script>
+{% if run.status == 'running' or run.status == 'pending' %}
+function pollStatus() {
+    fetch("{% url 'backtest_status' run.id %}")
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'done') {
+                document.getElementById('loadingSection').style.display = 'none';
+                document.getElementById('resultSection').style.display = 'block';
+                document.getElementById('statusBadge').textContent = '已完成';
+                document.getElementById('statusBadge').className = 'badge fs-6 bg-success';
+                renderResult(data);
+            } else if (data.status === 'failed') {
+                document.getElementById('loadingSection').style.display = 'none';
+                document.getElementById('statusBadge').textContent = '失败';
+                document.getElementById('statusBadge').className = 'badge fs-6 bg-danger';
+                location.reload();
+            } else if (data.status === 'running') {
+                setTimeout(pollStatus, 2000);
+            }
+        });
+}
+setTimeout(pollStatus, 1000);
+{% endif %}
+
+{% if run.status == 'done' %}
+renderResult({result: {{ run.result_json|safe }}, equity_curve: {{ run.equity_curve|safe }}, trades: {{ run.trades_json|safe }}});
+{% endif %}
+
+function renderResult(data) {
+    if (data.result) {
+        document.getElementById('mReturn').textContent = data.result['总收益率'] || '-';
+        document.getElementById('mSharpe').textContent = data.result['夏普比率'] || '-';
+        document.getElementById('mMDD').textContent = data.result['最大回撤'] || '-';
+        document.getElementById('mWinRate').textContent = data.result['胜率'] || '-';
+    }
+
+    if (data.equity_curve && data.equity_curve.length > 0) {
+        var dates = data.equity_curve.map(e => e.date);
+        var values = data.equity_curve.map(e => e.value);
+        var initial = values[0];
+
+        var eqChart = echarts.init(document.getElementById('equityChart'));
+        eqChart.setOption({
+            tooltip: {trigger: 'axis'},
+            grid: {left: 60, right: 20, top: 20, bottom: 30},
+            xAxis: {type: 'category', data: dates, axisLabel: {formatter: v => v.slice(0,10)}},
+            yAxis: {type: 'value', axisLabel: {formatter: v => (v/10000).toFixed(1)+'万'}},
+            series: [{
+                name: '权益', type: 'line', data: values, smooth: true,
+                lineStyle: {color: '#2c6fce', width: 2},
+                areaStyle: {color: {type: 'linear', x:0,y:0,x2:0,y2:1, colorStops: [{offset:0,color:'rgba(44,111,206,0.3)'},{offset:1,color:'rgba(44,111,206,0.05)'}]}},
+                markLine: {data: [{yAxis: initial, label: {formatter: '初始'}}], silent: true, lineStyle: {color:'#999',type:'dashed'}}
+            }]
+        });
+    }
+
+    if (data.equity_curve && data.equity_curve.length > 1) {
+        var ddVals = []; var peak = data.equity_curve[0].value;
+        for (var i = 0; i < data.equity_curve.length; i++) {
+            peak = Math.max(peak, data.equity_curve[i].value);
+            ddVals.push(((data.equity_curve[i].value - peak) / peak * 100).toFixed(2));
+        }
+        var ddChart = echarts.init(document.getElementById('drawdownChart'));
+        ddChart.setOption({
+            tooltip: {trigger: 'axis'},
+            grid: {left: 50, right: 20, top: 20, bottom: 30},
+            xAxis: {type: 'category', data: dates, axisLabel: {formatter: v => v.slice(0,10)}},
+            yAxis: {type: 'value', axisLabel: {formatter: v => v+'%'}},
+            series: [{name: '回撤', type: 'line', data: ddVals, areaStyle: {color: 'rgba(217,58,58,0.3)'}, lineStyle: {color: '#d93a3a'}}]
+        });
+    }
+
+    if (data.trades && data.trades.length > 0) {
+        var html = '<table class="table table-sm"><thead><tr><th>日期</th><th>操作</th><th>价格</th><th>数量</th><th>PnL</th></tr></thead><tbody>';
+        data.trades.forEach(function(t) {
+            var pnlClass = t.pnl > 0 ? 'text-success' : (t.pnl < 0 ? 'text-danger' : '');
+            html += '<tr><td>'+String(t.date).slice(0,10)+'</td><td>'+t.action+'</td><td>'+t.price+'</td><td>'+t.shares+'</td><td class="'+pnlClass+'">'+(t.pnl?t.pnl.toFixed(2):'-')+'</td></tr>';
+        });
+        html += '</tbody></table>';
+        document.getElementById('tradesTable').innerHTML = html;
+    }
+}
+</script>
+{% endblock %}

@@ -5,3 +5,6 @@ __pycache__/
 *.png
 *.csv
 output/
+.env
+*.cache
+.worktrees/

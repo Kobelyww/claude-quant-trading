@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: quant_trading
+      POSTGRES_USER: quant
+      POSTGRES_PASSWORD: quant
+    ports:
+      - "5432:5432"
+    volumes:
+      - quant_postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://quant:quant@postgres:5432/quant_trading
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    build: .
+    command: rq worker quant-trading --url redis://redis:6379/0
+    environment:
+      DATABASE_URL: postgresql+psycopg://quant:quant@postgres:5432/quant_trading
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  quant_postgres:

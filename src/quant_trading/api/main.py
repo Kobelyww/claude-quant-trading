@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from sqlalchemy import Engine
 
-from quant_trading.api.routes import backtests, health, instruments, paper, workflows
+from quant_trading.api.routes import dashboard, backtests, health, instruments, paper, workflows
 from quant_trading.storage.db import create_all, make_engine
 
 
@@ -20,4 +20,5 @@ def create_app(engine: Engine | None = None) -> FastAPI:
     app.include_router(backtests.router)
     app.include_router(paper.router)
     app.include_router(workflows.router)
+    app.include_router(dashboard.router)
     return app

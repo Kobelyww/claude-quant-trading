@@ -94,5 +94,17 @@ def test_operator_can_complete_core_workflow_over_http(legacy_sqlite_db: Path):
     account_detail = read_responses["account_detail"].json()
     assert account_detail["name"] == "E2E Paper"
 
+    run_detail = read_responses["run_detail"].json()
+    assert run_detail["id"] == run_id
+    assert run_detail["status"] == "running"
+
+    cash_ledger = read_responses["cash_ledger"].json()
+    assert any(row["event_type"] == "initial_deposit" for row in cash_ledger)
+
+    for response_name in ("orders", "fills", "risk_decisions", "snapshots"):
+        rows = read_responses[response_name].json()
+        if rows:
+            assert all(row["run_id"] == run_id for row in rows)
+
     dashboard_html = read_responses["dashboard"].text
-    assert dashboard_html.count("Operations Workbench") == 1
+    assert "<h1>Operations Workbench</h1>" in dashboard_html

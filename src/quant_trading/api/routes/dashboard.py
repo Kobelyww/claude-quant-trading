@@ -184,7 +184,7 @@ def _render_dashboard(
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Dashboard</title>
+  <title>Operations Workbench</title>
   <style>
     body {{ margin: 0; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1d2430; background: #f6f7f9; }}
     main {{ max-width: 1180px; margin: 0 auto; padding: 20px; }}

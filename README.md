@@ -6,17 +6,18 @@ new Python package version of the original Django demo app; legacy code is retai
 
 ## Current Milestone
 
-This milestone turns the project into a testable service skeleton:
+This milestone turns the project into a testable operations workbench:
 
 - Importing legacy A-share daily data from `legacy/django_app/db.sqlite3`.
 - Storing instruments, market bars, backtest runs, paper snapshots, and risk decisions in SQLAlchemy models.
 - Running a portfolio-style moving-average crossover backtest with commission and slippage.
 - Running a persistent, risk-gated paper trading account with simulated orders, fills, positions, cash ledger, and snapshots.
 - Reading health, instruments, backtests, and paper snapshots through FastAPI.
-- Running import and backtest work through job task functions that can be wired to RQ workers.
+- Running the operations workbench through command APIs and a server-rendered dashboard.
+- Completing the local loop: import legacy data -> run MA Cross backtest -> create paper account/run -> trigger paper tick -> inspect results.
 
-This version does not place real broker or exchange orders. Paper trading is still a research
-simulation with local simulated orders, fills, positions, cash ledger entries, and snapshots.
+This project does not place real broker or exchange orders. Command APIs and dashboard actions
+operate on local research and paper-trading state only.
 
 ## Project Layout
 
@@ -66,17 +67,83 @@ API endpoints:
 
 ```text
 http://localhost:8000/health
+http://localhost:8000/dashboard
 http://localhost:8000/instruments
 http://localhost:8000/backtests
 http://localhost:8000/paper/accounts
 http://localhost:8000/paper/runs
 http://localhost:8000/paper/snapshots
+http://localhost:8000/workflows/import-legacy
+http://localhost:8000/workflows/backtests/ma-cross
+http://localhost:8000/workflows/paper/accounts
+http://localhost:8000/workflows/paper/runs/ma-cross
+http://localhost:8000/workflows/paper/runs/{run_id}/tick
 ```
 
 By default the API service reads `DATABASE_URL`. In Docker Compose it points at PostgreSQL:
 
 ```text
 postgresql+psycopg://quant:quant@postgres:5432/quant_trading
+```
+
+## Run The Workbench
+
+Start the API locally:
+
+```bash
+python -m uvicorn quant_trading.api.main:app --host 127.0.0.1 --port 8000
+```
+
+Open the dashboard:
+
+```text
+http://127.0.0.1:8000/dashboard
+```
+
+The local workflow is:
+
+```text
+import legacy data -> run MA Cross backtest -> create paper account -> create MA Cross paper run -> run one paper tick -> inspect results
+```
+
+The command APIs are synchronous and intended for local research and paper trading only.
+
+Import legacy data:
+
+```bash
+curl -X POST http://127.0.0.1:8000/workflows/import-legacy \
+  -H "Content-Type: application/json" \
+  -d '{"legacy_db_path":"legacy/django_app/db.sqlite3"}'
+```
+
+Run a MA Cross backtest:
+
+```bash
+curl -X POST http://127.0.0.1:8000/workflows/backtests/ma-cross \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"000001","short_window":5,"long_window":20,"order_size":100,"initial_cash":"100000"}'
+```
+
+Create a paper account:
+
+```bash
+curl -X POST http://127.0.0.1:8000/workflows/paper/accounts \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Local Paper","initial_cash":"100000","base_currency":"CNY"}'
+```
+
+Create a MA Cross paper run:
+
+```bash
+curl -X POST http://127.0.0.1:8000/workflows/paper/runs/ma-cross \
+  -H "Content-Type: application/json" \
+  -d '{"account_id":1,"symbol":"000001","short_window":5,"long_window":20,"order_size":100,"max_order_value":"100000"}'
+```
+
+Run one paper tick:
+
+```bash
+curl -X POST http://127.0.0.1:8000/workflows/paper/runs/1/tick
 ```
 
 ## Job Tasks
@@ -130,14 +197,16 @@ They are kept for migration reference only. New product code lives under `src/qu
 
 ## Roadmap
 
-The next productization stage is persistent paper trading:
+Next productization stages:
 
-- Long-lived paper accounts and paper runs.
-- Persisted paper orders, fills, positions, and cash ledger entries.
-- Idempotent `run_one_tick(run_id, ...)` behavior for already-processed bars.
-- Read APIs for paper accounts, runs, positions, cash ledger, orders, fills, snapshots, and risk decisions.
+- Add queued execution and progress tracking for long imports/backtests.
+- Add authentication before exposing command endpoints beyond local development.
+- Add broker adapter interfaces only after paper-trading command contracts are stable.
+- Add Alembic migrations for existing databases instead of relying on `create_all()`.
 
 ## Safety
 
-AI-generated and custom strategies are research artifacts only. Paper trading requires approved,
-registered strategies. Real broker adapters are outside this milestone.
+This project does not place real broker or exchange orders. Command APIs and dashboard actions
+operate on local research and paper-trading state only. AI-generated and custom strategies are
+research artifacts only. Paper trading requires approved, registered strategies. Real broker
+adapters are outside this milestone.

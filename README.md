@@ -91,7 +91,7 @@ postgresql+psycopg://quant:quant@postgres:5432/quant_trading
 Start the API locally:
 
 ```bash
-python -m uvicorn quant_trading.api.main:app --host 127.0.0.1 --port 8000
+PYTHONPATH=src python -m uvicorn --factory quant_trading.api.main:create_app --host 127.0.0.1 --port 8000
 ```
 
 Open the dashboard:

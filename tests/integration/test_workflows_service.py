@@ -260,6 +260,25 @@ def test_workflow_service_strips_symbols_before_use(legacy_sqlite_db: Path, tmp_
     assert paper_run.symbol == "000001"
 
 
+def test_workflow_service_rejects_backtest_symbol_without_market_bars(
+    legacy_sqlite_db: Path,
+    tmp_path: Path,
+):
+    engine = make_engine(f"sqlite+pysqlite:///{tmp_path / 'workflow-missing-bars.sqlite3'}")
+    create_all(engine)
+    import_legacy_data(engine, legacy_sqlite_db)
+
+    with pytest.raises(ValueError, match="no market bars found for symbol: NO_SUCH"):
+        run_ma_cross_backtest(
+            engine,
+            symbol="NO_SUCH",
+            short_window=3,
+            long_window=8,
+            order_size=50,
+            initial_cash=Decimal("100000"),
+        )
+
+
 def test_workflow_service_rejects_non_finite_decimals(tmp_path: Path):
     engine = make_engine(f"sqlite+pysqlite:///{tmp_path / 'workflow-decimal-bounds.sqlite3'}")
     create_all(engine)

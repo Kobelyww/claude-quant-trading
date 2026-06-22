@@ -151,3 +151,28 @@ def test_dashboard_account_form_error_displays_plain_message():
 
     assert response.status_code == 400
     assert "name is required" in response.text
+
+
+def test_dashboard_backtest_action_rejects_symbol_without_market_bars(
+    legacy_sqlite_db: Path,
+):
+    client, _ = make_client()
+    import_response = client.post(
+        "/workflows/import-legacy",
+        json={"legacy_db_path": str(legacy_sqlite_db)},
+    )
+
+    response = client.post(
+        "/dashboard/actions/backtests/ma-cross",
+        data={
+            "symbol": "NO_SUCH",
+            "short_window": "3",
+            "long_window": "8",
+            "order_size": "50",
+            "initial_cash": "100000",
+        },
+    )
+
+    assert import_response.status_code == 200
+    assert response.status_code == 400
+    assert "no market bars found" in response.text

@@ -121,6 +121,31 @@ def test_workflow_command_api_validates_invalid_payloads(legacy_sqlite_db: Path)
     assert missing_tick_response.status_code == 404
 
 
+def test_workflow_command_api_rejects_backtest_symbol_without_market_bars(
+    legacy_sqlite_db: Path,
+):
+    client, _ = make_client()
+    import_response = client.post(
+        "/workflows/import-legacy",
+        json={"legacy_db_path": str(legacy_sqlite_db)},
+    )
+
+    response = client.post(
+        "/workflows/backtests/ma-cross",
+        json={
+            "symbol": "NO_SUCH",
+            "short_window": 3,
+            "long_window": 8,
+            "order_size": 50,
+            "initial_cash": "100000",
+        },
+    )
+
+    assert import_response.status_code == 200
+    assert response.status_code == 400
+    assert "no market bars found" in response.json()["detail"]
+
+
 def test_workflow_command_api_maps_missing_legacy_import_path_to_404(tmp_path: Path):
     client, _ = make_client()
     missing_path = tmp_path / "missing.sqlite3"

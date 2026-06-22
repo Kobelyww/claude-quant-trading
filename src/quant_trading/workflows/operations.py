@@ -17,6 +17,7 @@ from quant_trading.risk.rules import (
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
 from quant_trading.storage.models import PaperRunORM
+from quant_trading.storage.repositories import MarketDataRepository
 from quant_trading.strategy.builtin.ma_cross import MACrossStrategy
 
 DEFAULT_COMMISSION_RATE = Decimal("0.0003")
@@ -44,6 +45,7 @@ def run_ma_cross_backtest(
     symbol = _validate_symbol(symbol)
     _validate_ma_cross(short_window, long_window, order_size)
     initial_cash = _validate_positive_decimal(initial_cash, "initial_cash")
+    _ensure_market_bars_exist(engine, symbol)
     backtest = BacktestEngine(
         engine=engine,
         initial_cash=initial_cash,
@@ -66,6 +68,12 @@ def run_ma_cross_backtest(
         "final_equity": _plain_decimal(result.final_equity),
         "equity_points": result.equity_points,
     }
+
+
+def _ensure_market_bars_exist(engine: Engine, symbol: str) -> None:
+    with session_scope(engine) as session:
+        if not MarketDataRepository(session).list_bars(symbol):
+            raise ValueError(f"no market bars found for symbol: {symbol}")
 
 
 def create_paper_account(

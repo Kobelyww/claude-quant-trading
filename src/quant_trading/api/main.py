@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import Engine
 
 from quant_trading.api.auth import install_token_auth, workflow_command_name_for_path
-from quant_trading.api.routes import dashboard, backtests, health, instruments, paper, workflows
+from quant_trading.api.routes import dashboard, backtests, health, instruments, jobs, paper, workflows
 from quant_trading.config import AppSettings
 from quant_trading.storage.db import create_all, make_engine
 from quant_trading.workflows.runner import record_failed_workflow_command
@@ -39,6 +39,7 @@ def create_app(engine: Engine | None = None, settings: AppSettings | None = None
     app.include_router(instruments.router)
     app.include_router(backtests.router)
     app.include_router(paper.router)
+    app.include_router(jobs.router)
     app.include_router(workflows.router)
     app.include_router(dashboard.router)
     install_token_auth(app, settings)

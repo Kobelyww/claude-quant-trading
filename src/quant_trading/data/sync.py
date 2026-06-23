@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 import time
 from typing import Any
@@ -10,6 +11,7 @@ from quant_trading.core.enums import Market
 from quant_trading.core.models import Bar
 from quant_trading.data.providers.registry import ProviderRegistry, build_default_provider_registry
 from quant_trading.data.validation import validate_bars
+from quant_trading.jobs.cancellation import CancellationToken
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.repositories import (
     DataSyncRunRepository,
@@ -27,6 +29,8 @@ def sync_daily_market_data(
     *,
     registry: ProviderRegistry | None = None,
     job_run_id: int | None = None,
+    cancellation_token: CancellationToken | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict[str, Any]:
     provider_name = _normalize_provider_name(provider_name)
     symbol = _normalize_symbol(symbol)
@@ -43,6 +47,8 @@ def sync_daily_market_data(
     currency = "CNY"
     started_at = _utcnow()
     started_counter = time.perf_counter()
+    if cancellation_token is None and job_run_id is not None:
+        cancellation_token = CancellationToken(engine, job_run_id)
 
     with session_scope(engine) as session:
         sync_repo = DataSyncRunRepository(session)
@@ -70,6 +76,8 @@ def sync_daily_market_data(
         instrument_id = instrument.id
 
     try:
+        _check_cancelled(cancellation_token)
+        _emit_progress(progress_callback, 20, "fetching provider bars")
         bars = validate_bars(
             [
                 _normalize_bar(instrument_id, symbol, bar)
@@ -81,9 +89,12 @@ def sync_daily_market_data(
                 )
             ]
         )
+        _check_cancelled(cancellation_token)
+        _emit_progress(progress_callback, 50, "validated provider bars")
         with session_scope(engine) as session:
             bars_repo = MarketDataRepository(session)
             for bar in bars:
+                _check_cancelled(cancellation_token)
                 bars_repo.upsert_daily_bar(
                     instrument_id=instrument_id,
                     timestamp=bar.timestamp,
@@ -95,6 +106,7 @@ def sync_daily_market_data(
                     source=bar.source,
                     adjusted=bar.adjusted.value,
                 )
+            _emit_progress(progress_callback, 90, "stored provider bars")
             sync_repo = DataSyncRunRepository(session)
             sync_run = sync_repo.get(sync_run_id)
             if sync_run is not None:
@@ -184,6 +196,20 @@ def _derive_exchange(symbol: str) -> str:
     if code.startswith(("600", "601", "603", "605", "688")):
         return "SSE"
     return "SZSE"
+
+
+def _check_cancelled(cancellation_token: CancellationToken | None) -> None:
+    if cancellation_token is not None:
+        cancellation_token.raise_if_cancelled()
+
+
+def _emit_progress(
+    progress_callback: Callable[[int, str], None] | None,
+    progress: int,
+    message: str,
+) -> None:
+    if progress_callback is not None:
+        progress_callback(progress, message)
 
 
 def _utcnow() -> datetime:

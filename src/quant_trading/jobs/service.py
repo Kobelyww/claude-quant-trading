@@ -14,7 +14,7 @@ from quant_trading.jobs.runtime import (
 )
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import JobRunORM
-from quant_trading.storage.repositories import JobRunRepository
+from quant_trading.storage.repositories import JobEventRepository, JobRunRepository
 
 
 class QueueLike(Protocol):
@@ -35,6 +35,14 @@ def submit_job_run(
             request_payload=job_payload_dumps(request_payload),
             queued_at=utcnow(),
         )
+        JobEventRepository(session).record(
+            row.id,
+            "queued",
+            "job queued",
+            progress=0,
+            payload={"job_type": job_type},
+            created_at=utcnow(),
+        )
         job_run_id = row.id
 
     if settings.job_executor == "inline":
@@ -47,6 +55,14 @@ def submit_job_run(
             row = repo.get(job_run_id)
             if row is not None:
                 repo.mark_enqueued(row, rq_job_id=str(rq_job.id), updated_at=utcnow())
+                JobEventRepository(session).record(
+                    row.id,
+                    "enqueued",
+                    "job enqueued",
+                    progress=row.progress,
+                    payload={"rq_job_id": str(rq_job.id)},
+                    created_at=utcnow(),
+                )
     else:
         raise ValueError(f"unsupported job executor: {settings.job_executor}")
 

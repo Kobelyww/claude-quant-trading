@@ -8,6 +8,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from quant_trading.config import AppSettings
 
+COMMAND_PATH_PATTERNS = [
+    ("POST", "/workflows/import-legacy", "import_legacy"),
+    ("POST", "/workflows/backtests/ma-cross", "backtest_ma_cross"),
+    ("POST", "/workflows/paper/accounts", "paper_create_account"),
+    ("POST", "/workflows/paper/runs/ma-cross", "paper_start_ma_cross_run"),
+]
+
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: FastAPI, settings: AppSettings):
@@ -37,6 +44,15 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
 
 def install_token_auth(app: FastAPI, settings: AppSettings) -> None:
     app.add_middleware(TokenAuthMiddleware, settings=settings)
+
+
+def workflow_command_name_for_path(method: str, path: str) -> str | None:
+    if method == "POST" and path.startswith("/workflows/paper/runs/") and path.endswith("/tick"):
+        return "paper_run_tick"
+    for candidate_method, candidate_path, command_name in COMMAND_PATH_PATTERNS:
+        if method == candidate_method and path == candidate_path:
+            return command_name
+    return None
 
 
 def _is_public_path(path: str, public_routes: list[str]) -> bool:

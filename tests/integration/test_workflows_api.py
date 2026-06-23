@@ -158,3 +158,58 @@ def test_workflow_command_api_maps_missing_legacy_import_path_to_404(tmp_path: P
     assert response.status_code == 404
     detail = response.json()["detail"]
     assert str(missing_path) in detail or "not found" in detail.lower()
+
+
+def test_workflow_run_read_api_lists_and_gets_runs(legacy_sqlite_db: Path):
+    client, _ = make_client()
+    client.post("/workflows/import-legacy", json={"legacy_db_path": str(legacy_sqlite_db)})
+
+    list_response = client.get("/workflows/runs")
+
+    assert list_response.status_code == 200
+    rows = list_response.json()
+    assert len(rows) == 1
+    assert rows[0]["command_name"] == "import_legacy"
+    assert rows[0]["status"] == "succeeded"
+    assert rows[0]["error_message"] is None
+    assert rows[0]["result_payload"]["imported_bars"] == 121
+
+    detail_response = client.get(f"/workflows/runs/{rows[0]['id']}")
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["id"] == rows[0]["id"]
+
+
+def test_workflow_run_read_api_filters_by_status_and_command(legacy_sqlite_db: Path):
+    client, _ = make_client()
+    client.post("/workflows/import-legacy", json={"legacy_db_path": str(legacy_sqlite_db)})
+    client.post(
+        "/workflows/backtests/ma-cross",
+        json={
+            "symbol": "NO_SUCH",
+            "short_window": 3,
+            "long_window": 8,
+            "order_size": 50,
+            "initial_cash": "100000",
+        },
+    )
+
+    response = client.get(
+        "/workflows/runs",
+        params={"status": "failed", "command_name": "backtest_ma_cross"},
+    )
+
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["command_name"] == "backtest_ma_cross"
+
+
+def test_workflow_run_read_api_returns_404_for_missing_run():
+    client, _ = make_client()
+
+    response = client.get("/workflows/runs/999999")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "workflow run not found"

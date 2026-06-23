@@ -236,6 +236,51 @@ def test_dashboard_displays_data_sync_runs():
     assert "succeeded" in html
 
 
+def test_dashboard_displays_job_schedules_and_events():
+    from datetime import UTC, datetime
+
+    from quant_trading.jobs.runtime import MARKET_DATA_SYNC, job_payload_dumps
+    from quant_trading.storage.repositories import (
+        JobEventRepository,
+        JobRunRepository,
+        JobScheduleRepository,
+    )
+
+    client, engine = make_client()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with session_scope(engine) as session:
+        job = JobRunRepository(session).create_queued(
+            MARKET_DATA_SYNC,
+            job_payload_dumps({"provider": "fake", "symbol": "000001"}),
+            now,
+        )
+        JobEventRepository(session).record(
+            job.id,
+            "queued",
+            "job queued",
+            progress=0,
+            created_at=now,
+        )
+        JobScheduleRepository(session).create(
+            "daily-000001-sync",
+            MARKET_DATA_SYNC,
+            job_payload_dumps({"provider": "fake", "symbol": "000001"}),
+            "interval",
+            86400,
+            True,
+            now,
+            now,
+        )
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "Job Schedules" in response.text
+    assert "daily-000001-sync" in response.text
+    assert "Job Events" in response.text
+    assert "job queued" in response.text
+
+
 def test_failed_dashboard_action_creates_visible_failed_workflow_run(
     legacy_sqlite_db: Path,
 ):

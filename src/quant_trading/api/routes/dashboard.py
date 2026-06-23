@@ -15,7 +15,9 @@ from quant_trading.storage.models import (
     CashLedgerORM,
     DataSyncRunORM,
     InstrumentORM,
+    JobEventORM,
     JobRunORM,
+    JobScheduleORM,
     MarketBarORM,
     PaperAccountORM,
     PaperFillORM,
@@ -28,7 +30,9 @@ from quant_trading.storage.models import (
 )
 from quant_trading.storage.repositories import (
     DataSyncRunRepository,
+    JobEventRepository,
     JobRunRepository,
+    JobScheduleRepository,
     WorkflowRunRepository,
 )
 from quant_trading.workflows.operations import (
@@ -196,6 +200,8 @@ def _collect_state(request: Request) -> dict[str, Any]:
             "latest_bar": session.scalar(select(func.max(MarketBarORM.timestamp))),
             "workflow_runs": WorkflowRunRepository(session).list_recent(limit=20),
             "job_runs": JobRunRepository(session).list_recent(limit=20),
+            "job_schedules": JobScheduleRepository(session).list_recent(limit=20),
+            "job_events": JobEventRepository(session).list_recent(limit=30),
             "data_sync_runs": DataSyncRunRepository(session).list_recent(limit=20),
             "backtests": _latest(session, BacktestRunORM),
             "accounts": _latest(session, PaperAccountORM),
@@ -270,6 +276,8 @@ def _render_dashboard(
   </section>
   {_workflow_runs_table(state)}
   {_job_runs_table(state)}
+  {_job_schedules_table(state)}
+  {_job_events_table(state)}
   {_data_sync_runs_table(state)}
   {_table("Backtest Runs", ["ID", "Strategy", "Symbol", "Initial Cash", "Final Equity", "Status"], state["backtests"], lambda r: [f"#{r.id}", r.strategy_name, r.symbol, r.initial_cash, r.final_equity, r.status])}
   {_table("Paper Accounts", ["ID", "Name", "Currency", "Initial Cash", "Status", "Created"], state["accounts"], lambda r: [f"#{r.id}", r.name, r.base_currency, r.initial_cash, r.status, r.created_at])}
@@ -378,6 +386,40 @@ def _data_sync_runs_table(state: dict[str, Any]) -> str:
             f"#{r.job_run_id}" if r.job_run_id else "",
             f"{r.duration_ms} ms" if r.duration_ms is not None else "",
             r.error_message or "",
+        ],
+    )
+
+
+def _job_schedules_table(state: dict[str, Any]) -> str:
+    return _table(
+        "Job Schedules",
+        ["ID", "Name", "Type", "Enabled", "Interval", "Next Run", "Last Run", "Last Job"],
+        state["job_schedules"],
+        lambda r: [
+            f"#{r.id}",
+            r.name,
+            r.job_type,
+            "yes" if r.enabled else "no",
+            f"{r.interval_seconds}s",
+            r.next_run_at,
+            r.last_run_at or "",
+            f"#{r.last_job_run_id}" if r.last_job_run_id else "",
+        ],
+    )
+
+
+def _job_events_table(state: dict[str, Any]) -> str:
+    return _table(
+        "Job Events",
+        ["ID", "Job", "Type", "Message", "Progress", "Created"],
+        state["job_events"],
+        lambda r: [
+            f"#{r.id}",
+            f"#{r.job_run_id}",
+            r.event_type,
+            r.message,
+            f"{r.progress}%" if r.progress is not None else "",
+            r.created_at,
         ],
     )
 

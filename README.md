@@ -19,6 +19,7 @@ This milestone turns the project into a testable operations workbench:
 - Recording workflow command audit history in `workflow_runs`.
 - Tracking queued import, backtest, and paper tick execution lifecycle in `job_runs`.
 - Syncing provider-backed daily market data with audit history in `data_sync_runs`.
+- Scheduling recurring market-data sync jobs with explicit job event timelines and cancellation controls.
 - Completing the local loop: import legacy data -> run MA Cross backtest -> create paper account/run -> trigger paper tick -> inspect results.
 
 This project does not place real broker or exchange orders. Command APIs and dashboard actions
@@ -87,10 +88,15 @@ http://localhost:8000/workflows/paper/runs/{run_id}/tick
 http://localhost:8000/workflows/runs
 http://localhost:8000/jobs
 http://localhost:8000/jobs/{job_run_id}
+http://localhost:8000/jobs/{job_run_id}/cancel
+http://localhost:8000/jobs/{job_run_id}/events
 http://localhost:8000/jobs/import-legacy
 http://localhost:8000/jobs/backtests/ma-cross
 http://localhost:8000/jobs/paper/runs/{run_id}/tick
 http://localhost:8000/jobs/market-data/sync
+http://localhost:8000/job-schedules
+http://localhost:8000/job-schedules/run-due
+http://localhost:8000/job-schedules/{schedule_id}
 http://localhost:8000/data-sync-runs
 http://localhost:8000/data-sync-runs/{sync_run_id}
 ```
@@ -242,9 +248,45 @@ curl http://127.0.0.1:8000/jobs
 curl http://127.0.0.1:8000/jobs/1
 ```
 
-`job_runs` records queued/running/succeeded/failed status, progress, result payload, error message, optional RQ job id, and the linked `workflow_run_id`.
+`job_runs` records queued/running/cancel_requested/succeeded/failed/cancelled status, progress, result payload, error message, optional RQ job id, and the linked `workflow_run_id`.
 
 Docker Compose sets `QUANT_JOB_EXECUTOR=rq` so API requests enqueue jobs and the worker executes them. This still does not place broker or exchange orders.
+
+## Scheduled Operations And Job Control
+
+Stage 7 adds an operator control plane around queued jobs:
+
+- `POST /job-schedules` creates an enabled interval schedule for `market_data_sync`.
+- `GET /job-schedules` lists configured schedules.
+- `PATCH /job-schedules/{schedule_id}` enables, disables, or changes a schedule.
+- `POST /job-schedules/run-due` runs one explicit scheduler tick.
+- `POST /jobs/{job_run_id}/cancel` cancels queued jobs or requests cooperative cancellation for running jobs.
+- `GET /jobs/{job_run_id}/events` returns the lifecycle timeline for a job.
+
+Create a daily market-data sync schedule:
+
+```bash
+curl -X POST http://127.0.0.1:8000/job-schedules \
+  -H "Content-Type: application/json" \
+  -d '{"name":"daily-000001-sync","job_type":"market_data_sync","request_payload":{"provider":"akshare","symbol":"000001"},"interval_seconds":86400,"next_run_at":"2026-06-24T09:30:00"}'
+```
+
+Run one scheduler tick:
+
+```bash
+curl -X POST http://127.0.0.1:8000/job-schedules/run-due \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Inspect or cancel a job:
+
+```bash
+curl http://127.0.0.1:8000/jobs/1/events
+curl -X POST http://127.0.0.1:8000/jobs/1/cancel
+```
+
+The scheduler stores only job configuration and operational metadata. It does not store provider credentials, does not place real broker orders, and does not add live exchange execution.
 
 ## Market Data Sync
 
@@ -324,7 +366,8 @@ They are kept for migration reference only. New product code lives under `src/qu
 
 Next productization stages:
 
-- Add scheduled sync, cancellation, and live progress streaming for queued work.
+- Add live progress streaming for queued work.
+- Add high-availability schedule locking before running multiple scheduler processes.
 - Add broker adapter interfaces only after paper-trading command contracts are stable.
 - Add multi-user authorization before exposing this as a public service.
 - Add incremental migrations for legacy hand-created SQLite databases.

@@ -281,6 +281,37 @@ def test_dashboard_displays_job_schedules_and_events():
     assert "job queued" in response.text
 
 
+def test_dashboard_displays_schedule_lease_state():
+    from datetime import datetime, timedelta
+
+    from quant_trading.jobs.runtime import MARKET_DATA_SYNC
+    from quant_trading.storage.repositories import JobScheduleRepository
+
+    client, engine = make_client()
+    now = datetime(2026, 6, 23, 9, 30)
+    with session_scope(engine) as session:
+        schedule = JobScheduleRepository(session).create(
+            name="leased-dashboard-sync",
+            job_type=MARKET_DATA_SYNC,
+            request_payload="{}",
+            schedule_type="interval",
+            interval_seconds=3600,
+            enabled=True,
+            next_run_at=now,
+            created_at=now,
+        )
+        schedule.locked_until = now + timedelta(minutes=5)
+        schedule.locked_by = "dashboard-runner"
+        schedule.lock_acquired_at = now
+        session.flush()
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "dashboard-runner" in response.text
+    assert "Lease" in response.text
+
+
 def test_dashboard_renders_job_event_stream_hook_for_active_job():
     from datetime import UTC, datetime
 

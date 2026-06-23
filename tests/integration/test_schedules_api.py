@@ -29,6 +29,10 @@ def test_schedule_api_create_list_patch_and_get_missing():
     missing = client.get("/job-schedules/99")
 
     assert created.status_code == 200
+    body = created.json()
+    assert body["locked_until"] is None
+    assert body["locked_by"] is None
+    assert body["lock_acquired_at"] is None
     assert listed.status_code == 200
     assert listed.json()[0]["name"] == "daily-000001-sync"
     assert patched.status_code == 200

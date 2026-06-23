@@ -289,6 +289,10 @@ curl -X POST http://127.0.0.1:8000/jobs/1/cancel
 
 The scheduler stores only job configuration and operational metadata. It does not store provider credentials, does not place real broker orders, and does not add live exchange execution.
 
+Scheduler ticks use database-backed leases on `job_schedules` (`locked_until`, `locked_by`, and `lock_acquired_at`) so multiple scheduler runners do not submit the same due schedule at the same time. Expired leases are reclaimable on a later tick, which lets the system recover from a scheduler process crash between claim and release.
+
+For production-like deployments, run scheduled operations through the queued executor (`QUANT_JOB_EXECUTOR=rq`). The lease protects schedule submission; job execution remains handled by the worker.
+
 ## Live Job Progress Streaming
 
 Stage 8 adds an SSE stream for job-event timelines:
@@ -383,9 +387,8 @@ They are kept for migration reference only. New product code lives under `src/qu
 
 Next productization stages:
 
-- Add live progress streaming for queued work.
-- Add high-availability schedule locking before running multiple scheduler processes.
 - Add broker adapter interfaces only after paper-trading command contracts are stable.
+- Add operator controls for broker adapter dry runs and kill-switches.
 - Add multi-user authorization before exposing this as a public service.
 - Add incremental migrations for legacy hand-created SQLite databases.
 

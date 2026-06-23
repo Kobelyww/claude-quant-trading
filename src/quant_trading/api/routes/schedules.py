@@ -125,6 +125,9 @@ def _schedule_payload(row: JobScheduleORM) -> dict[str, Any]:
         "next_run_at": _iso(row.next_run_at),
         "last_run_at": _iso(row.last_run_at),
         "last_job_run_id": row.last_job_run_id,
+        "locked_until": _iso(row.locked_until),
+        "locked_by": row.locked_by,
+        "lock_acquired_at": _iso(row.lock_acquired_at),
         "created_at": _iso(row.created_at),
         "updated_at": _iso(row.updated_at),
     }

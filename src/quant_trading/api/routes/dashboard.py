@@ -416,7 +416,17 @@ def _data_sync_runs_table(state: dict[str, Any]) -> str:
 def _job_schedules_table(state: dict[str, Any]) -> str:
     return _table(
         "Job Schedules",
-        ["ID", "Name", "Type", "Enabled", "Interval", "Next Run", "Last Run", "Last Job"],
+        [
+            "ID",
+            "Name",
+            "Type",
+            "Enabled",
+            "Interval",
+            "Next Run",
+            "Last Run",
+            "Last Job",
+            "Lease",
+        ],
         state["job_schedules"],
         lambda r: [
             f"#{r.id}",
@@ -427,8 +437,16 @@ def _job_schedules_table(state: dict[str, Any]) -> str:
             r.next_run_at,
             r.last_run_at or "",
             f"#{r.last_job_run_id}" if r.last_job_run_id else "",
+            _format_schedule_lease(r),
         ],
     )
+
+
+def _format_schedule_lease(row: JobScheduleORM) -> str:
+    if row.locked_until is None:
+        return ""
+    owner = row.locked_by or "unknown"
+    return f"{owner} until {row.locked_until}"
 
 
 def _job_events_table(state: dict[str, Any]) -> str:

@@ -14,6 +14,7 @@ from quant_trading.storage.models import (
     BacktestRunORM,
     CashLedgerORM,
     InstrumentORM,
+    JobRunORM,
     MarketBarORM,
     PaperAccountORM,
     PaperFillORM,
@@ -24,7 +25,7 @@ from quant_trading.storage.models import (
     RiskDecisionORM,
     WorkflowRunORM,
 )
-from quant_trading.storage.repositories import WorkflowRunRepository
+from quant_trading.storage.repositories import JobRunRepository, WorkflowRunRepository
 from quant_trading.workflows.operations import (
     create_paper_account,
     import_legacy_data,
@@ -189,6 +190,7 @@ def _collect_state(request: Request) -> dict[str, Any]:
             "instrument_count": session.scalar(select(func.count(InstrumentORM.id))) or 0,
             "latest_bar": session.scalar(select(func.max(MarketBarORM.timestamp))),
             "workflow_runs": WorkflowRunRepository(session).list_recent(limit=20),
+            "job_runs": JobRunRepository(session).list_recent(limit=20),
             "backtests": _latest(session, BacktestRunORM),
             "accounts": _latest(session, PaperAccountORM),
             "runs": _latest(session, PaperRunORM),
@@ -261,6 +263,7 @@ def _render_dashboard(
     {_render_forms(state)}
   </section>
   {_workflow_runs_table(state)}
+  {_job_runs_table(state)}
   {_table("Backtest Runs", ["ID", "Strategy", "Symbol", "Initial Cash", "Final Equity", "Status"], state["backtests"], lambda r: [f"#{r.id}", r.strategy_name, r.symbol, r.initial_cash, r.final_equity, r.status])}
   {_table("Paper Accounts", ["ID", "Name", "Currency", "Initial Cash", "Status", "Created"], state["accounts"], lambda r: [f"#{r.id}", r.name, r.base_currency, r.initial_cash, r.status, r.created_at])}
   {_table("Paper Runs", ["ID", "Account", "Strategy", "Symbol", "Status", "Last Processed"], state["runs"], lambda r: [f"#{r.id}", f"#{r.account_id}", r.strategy_name, r.symbol, r.status, r.last_processed_at])}
@@ -335,6 +338,24 @@ def _workflow_runs_table(state: dict[str, Any]) -> str:
     )
 
 
+def _job_runs_table(state: dict[str, Any]) -> str:
+    return _table(
+        "Job Runs",
+        ["ID", "Type", "Status", "Progress", "Started", "Duration", "Workflow Run", "Error"],
+        state["job_runs"],
+        lambda r: [
+            f"#{r.id}",
+            r.job_type,
+            r.status,
+            f"{r.progress}%",
+            r.started_at,
+            f"{r.duration_ms} ms" if r.duration_ms is not None else "",
+            f"#{r.workflow_run_id}" if r.workflow_run_id else "",
+            r.error_message or "",
+        ],
+    )
+
+
 def _table(
     title: str,
     columns: list[str],
@@ -361,7 +382,7 @@ def _table_cell(value: Any) -> str:
     return f"<td{cell_class}>{_e(value)}</td>"
 
 
-def _object_ref(row: WorkflowRunORM) -> str:
+def _object_ref(row: WorkflowRunORM | JobRunORM) -> str:
     if not row.created_object_type or row.created_object_id is None:
         return ""
     return f"{row.created_object_type} #{row.created_object_id}"

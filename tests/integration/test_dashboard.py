@@ -193,6 +193,24 @@ def test_dashboard_displays_workflow_run_history(legacy_sqlite_db: Path):
     assert "Auth" in html
 
 
+def test_dashboard_displays_job_runs(legacy_sqlite_db: Path):
+    client, _ = make_client()
+    response = client.post(
+        "/jobs/import-legacy",
+        json={"legacy_db_path": str(legacy_sqlite_db)},
+    )
+
+    dashboard = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert dashboard.status_code == 200
+    html = dashboard.text
+    assert "Job Runs" in html
+    assert "import_legacy" in html
+    assert "100%" in html
+    assert "succeeded" in html
+
+
 def test_failed_dashboard_action_creates_visible_failed_workflow_run(
     legacy_sqlite_db: Path,
 ):

@@ -17,6 +17,7 @@ This milestone turns the project into a testable operations workbench:
 - Protecting dashboard, read APIs, and workflow commands with optional token auth.
 - Migrating runtime schema with Alembic.
 - Recording workflow command audit history in `workflow_runs`.
+- Tracking queued import, backtest, and paper tick execution lifecycle in `job_runs`.
 - Completing the local loop: import legacy data -> run MA Cross backtest -> create paper account/run -> trigger paper tick -> inspect results.
 
 This project does not place real broker or exchange orders. Command APIs and dashboard actions
@@ -83,6 +84,11 @@ http://localhost:8000/workflows/paper/accounts
 http://localhost:8000/workflows/paper/runs/ma-cross
 http://localhost:8000/workflows/paper/runs/{run_id}/tick
 http://localhost:8000/workflows/runs
+http://localhost:8000/jobs
+http://localhost:8000/jobs/{job_run_id}
+http://localhost:8000/jobs/import-legacy
+http://localhost:8000/jobs/backtests/ma-cross
+http://localhost:8000/jobs/paper/runs/{run_id}/tick
 ```
 
 By default the API service reads `DATABASE_URL`. In Docker Compose it points at PostgreSQL:
@@ -206,6 +212,36 @@ curl -H "Authorization: Bearer local-token" http://127.0.0.1:8000/workflows/runs
 
 Audit rows include status, summarized request payload, result payload, error message, created object reference, start time, finish time, and duration. API tokens are never stored in workflow payloads.
 
+## Queued Job Runtime
+
+Stage 5 adds durable job lifecycle tracking through `job_runs`.
+
+Executor modes:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `QUANT_JOB_EXECUTOR` | `inline` | `inline` executes immediately in-process; `rq` enqueues work for the Redis/RQ worker. |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection used by RQ mode. |
+
+Create an inline local import job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/import-legacy \
+  -H "Content-Type: application/json" \
+  -d '{"legacy_db_path":"legacy/django_app/db.sqlite3"}'
+```
+
+Read jobs:
+
+```bash
+curl http://127.0.0.1:8000/jobs
+curl http://127.0.0.1:8000/jobs/1
+```
+
+`job_runs` records queued/running/succeeded/failed status, progress, result payload, error message, optional RQ job id, and the linked `workflow_run_id`.
+
+Docker Compose sets `QUANT_JOB_EXECUTOR=rq` so API requests enqueue jobs and the worker executes them. This still does not place broker or exchange orders.
+
 ## Job Tasks
 
 The current task functions live in `quant_trading.jobs.tasks`:
@@ -260,7 +296,7 @@ They are kept for migration reference only. New product code lives under `src/qu
 
 Next productization stages:
 
-- Add queued execution and progress tracking for long imports/backtests.
+- Add scheduled jobs, cancellation, and live progress streaming for queued work.
 - Add broker adapter interfaces only after paper-trading command contracts are stable.
 - Add multi-user authorization before exposing this as a public service.
 - Add incremental migrations for legacy hand-created SQLite databases.

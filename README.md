@@ -361,6 +361,24 @@ run_ma_cross_backtest_task(
 - Accounting errors such as insufficient cash are surfaced instead of silently producing invalid
   equity.
 
+## Broker Adapter Safety Boundary
+
+Stage 10 adds a broker adapter contract for future live integrations, but this repository still does not place real broker or exchange orders.
+
+Safety defaults:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `QUANT_TRADING_ENABLED` | `false` | Global kill-switch. Future live-capable adapters must refuse submission unless this is true. |
+| `QUANT_BROKER_MODE` | `simulated` | Broker mode. Stage 10 supports `simulated` and `dry_run`; live mode is intentionally unavailable. |
+
+Available adapters:
+
+- `SimulatedBrokerAdapter` wraps the existing simulated broker and creates deterministic simulated fills for backtests and paper trading.
+- `DryRunBrokerAdapter` records would-submit order requests and returns accepted dry-run results without fills or external calls.
+
+The adapter boundary is preparation for real market integration, not a broker integration itself. Real broker adapters require separate credentials handling, account synchronization, live order status reconciliation, kill-switch tests, and explicit operator approval.
+
 ## Legacy Data
 
 The first migration source is:

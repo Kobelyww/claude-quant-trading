@@ -363,14 +363,20 @@ class JobEventRepository:
         self.session.flush()
         return row
 
-    def list_for_job(self, job_run_id: int) -> list[JobEventORM]:
-        return list(
-            self.session.scalars(
-                select(JobEventORM)
-                .where(JobEventORM.job_run_id == job_run_id)
-                .order_by(JobEventORM.id)
-            ).all()
+    def list_for_job(
+        self,
+        job_run_id: int,
+        *,
+        after_event_id: int | None = None,
+    ) -> list[JobEventORM]:
+        statement = (
+            select(JobEventORM)
+            .where(JobEventORM.job_run_id == job_run_id)
+            .order_by(JobEventORM.id)
         )
+        if after_event_id is not None:
+            statement = statement.where(JobEventORM.id > after_event_id)
+        return list(self.session.scalars(statement).all())
 
     def list_recent(self, *, limit: int = 50) -> list[JobEventORM]:
         return list(

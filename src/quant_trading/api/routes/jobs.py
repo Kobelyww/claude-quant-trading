@@ -5,8 +5,10 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from quant_trading.api.job_streaming import ensure_job_exists, iter_job_event_sse
 from quant_trading.api.routes.workflows import ImportLegacyRequest, MACrossBacktestRequest
 from quant_trading.jobs.queue import make_queue
 from quant_trading.jobs.runtime import (
@@ -122,6 +124,31 @@ def list_job_events(job_run_id: int, request: Request) -> list[dict[str, Any]]:
             _job_event_payload(row)
             for row in JobEventRepository(session).list_for_job(job_run_id)
         ]
+
+
+@router.get("/{job_run_id}/stream")
+def stream_job_events(
+    job_run_id: int,
+    request: Request,
+    after_event_id: int = 0,
+    poll_interval_seconds: float = 1.0,
+    heartbeat_seconds: float = 15.0,
+    max_idle_seconds: float | None = None,
+) -> StreamingResponse:
+    ensure_job_exists(request.app.state.engine, job_run_id)
+    return StreamingResponse(
+        iter_job_event_sse(
+            request,
+            request.app.state.engine,
+            job_run_id,
+            after_event_id=after_event_id,
+            poll_interval_seconds=poll_interval_seconds,
+            heartbeat_seconds=heartbeat_seconds,
+            max_idle_seconds=max_idle_seconds,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @router.get("/{job_run_id}")

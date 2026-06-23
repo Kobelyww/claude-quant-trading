@@ -6,7 +6,13 @@ from sqlalchemy.orm import Session
 
 from quant_trading.core.enums import Market
 from quant_trading.core.models import Bar
-from quant_trading.storage.models import InstrumentORM, JobRunORM, MarketBarORM, WorkflowRunORM
+from quant_trading.storage.models import (
+    DataSyncRunORM,
+    InstrumentORM,
+    JobRunORM,
+    MarketBarORM,
+    WorkflowRunORM,
+)
 
 
 class InstrumentRepository:
@@ -291,3 +297,89 @@ class JobRunRepository:
 
     def get(self, job_run_id: int) -> JobRunORM | None:
         return self.session.get(JobRunORM, job_run_id)
+
+
+class DataSyncRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_running(
+        self,
+        provider: str,
+        symbol: str,
+        market: str,
+        asset_type: str,
+        currency: str,
+        exchange: str,
+        start_date: date | None,
+        end_date: date | None,
+        job_run_id: int | None,
+        started_at: datetime,
+    ) -> DataSyncRunORM:
+        row = DataSyncRunORM(
+            provider=provider,
+            symbol=symbol,
+            market=market,
+            asset_type=asset_type,
+            currency=currency,
+            exchange=exchange,
+            start_date=start_date,
+            end_date=end_date,
+            status="running",
+            imported_bars=0,
+            job_run_id=job_run_id,
+            started_at=started_at,
+            created_at=started_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def mark_succeeded(
+        self,
+        row: DataSyncRunORM,
+        imported_bars: int,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> DataSyncRunORM:
+        row.status = "succeeded"
+        row.imported_bars = imported_bars
+        row.error_message = None
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def mark_failed(
+        self,
+        row: DataSyncRunORM,
+        error_message: str,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> DataSyncRunORM:
+        row.status = "failed"
+        row.error_message = error_message
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        provider: str | None = None,
+        symbol: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[DataSyncRunORM]:
+        statement = select(DataSyncRunORM).order_by(DataSyncRunORM.id.desc()).limit(limit)
+        if provider:
+            statement = statement.where(DataSyncRunORM.provider == provider)
+        if symbol:
+            statement = statement.where(DataSyncRunORM.symbol == symbol)
+        if status:
+            statement = statement.where(DataSyncRunORM.status == status)
+        return list(self.session.scalars(statement).all())
+
+    def get(self, sync_run_id: int) -> DataSyncRunORM | None:
+        return self.session.get(DataSyncRunORM, sync_run_id)

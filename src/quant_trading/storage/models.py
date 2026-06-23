@@ -286,3 +286,29 @@ class JobRunORM(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class DataSyncRunORM(Base):
+    __tablename__ = "data_sync_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    market: Mapped[str] = mapped_column(String(32), default="a_stock")
+    asset_type: Mapped[str] = mapped_column(String(32), default="stock")
+    currency: Mapped[str] = mapped_column(String(16), default="CNY")
+    exchange: Mapped[str] = mapped_column(String(32), default="")
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    imported_bars: Mapped[int] = mapped_column(Integer, default=0)
+    job_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

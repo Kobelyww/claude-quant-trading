@@ -5,6 +5,10 @@ import pytest
 
 from quant_trading.core.enums import Market, OrderSide
 from quant_trading.core.models import Bar, Fill, OrderIntent, Portfolio
+from quant_trading.execution.broker import (
+    SimulatedBrokerAdapter,
+    broker_order_request_from_intent,
+)
 from quant_trading.execution.simulator import SimulatedBroker
 from quant_trading.portfolio.accounting import apply_fill
 
@@ -32,8 +36,19 @@ def test_buy_fill_reduces_cash_and_creates_position():
     )
 
     fill = broker.execute_market_order(intent, bar)
+    request = broker_order_request_from_intent(intent, bar, "unit-1")
+    adapter = SimulatedBrokerAdapter(
+        commission_rate=Decimal("0.0003"),
+        slippage_rate=Decimal("0.001"),
+    )
+    result = adapter.submit_order(request, bar)
     updated = apply_fill(portfolio, fill)
 
+    assert result.accepted is True
+    assert result.status == "filled"
+    assert result.mode == "simulated"
+    assert result.fill is not None
+    assert result.fill.price == fill.price
     assert fill.price == Decimal("10.010")
     assert fill.commission == Decimal("0.300300")
     assert updated.positions[1].quantity == 100

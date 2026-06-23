@@ -8,6 +8,7 @@ from typing import Protocol
 
 from quant_trading.core.enums import OrderSide, OrderStatus, OrderType
 from quant_trading.core.models import Bar, Fill, OrderIntent
+from quant_trading.execution.simulator import SimulatedBroker
 
 
 class BrokerExecutionMode(StrEnum):
@@ -96,6 +97,54 @@ class DryRunBrokerAdapter:
             mode=self.mode,
             accepted=False,
             message="dry-run order not found",
+        )
+
+
+@dataclass
+class SimulatedBrokerAdapter:
+    commission_rate: Decimal
+    slippage_rate: Decimal
+    mode: BrokerExecutionMode = BrokerExecutionMode.SIMULATED
+
+    def __post_init__(self) -> None:
+        self._broker = SimulatedBroker(
+            commission_rate=self.commission_rate,
+            slippage_rate=self.slippage_rate,
+        )
+
+    def submit_order(
+        self,
+        request: BrokerOrderRequest,
+        market_bar: Bar | None = None,
+    ) -> BrokerOrderResult:
+        if market_bar is None:
+            raise ValueError("market_bar is required for simulated execution")
+        intent = OrderIntent(
+            instrument_id=request.instrument_id,
+            symbol=request.symbol,
+            side=request.side,
+            quantity=request.quantity,
+            reason=request.reason,
+            order_type=request.order_type,
+            limit_price=request.limit_price,
+        )
+        fill = self._broker.execute_market_order(intent, market_bar)
+        return BrokerOrderResult(
+            broker_order_id=f"sim-{request.client_order_id}",
+            status=OrderStatus.FILLED,
+            mode=self.mode,
+            accepted=True,
+            message="simulated order filled",
+            fill=fill,
+        )
+
+    def cancel_order(self, broker_order_id: str) -> BrokerOrderResult:
+        return BrokerOrderResult(
+            broker_order_id=broker_order_id,
+            status=OrderStatus.CANCELLED,
+            mode=self.mode,
+            accepted=True,
+            message="simulated order cancelled",
         )
 
 

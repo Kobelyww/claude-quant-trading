@@ -533,3 +533,52 @@ def test_sell_to_zero_retains_position_row_for_audit(legacy_sqlite_db: Path):
     ]
     assert ledger_rows[3].amount == fill.price * Decimal(fill.quantity)
     assert ledger_rows[4].amount == -fill.commission
+
+
+def test_paper_tick_with_dry_run_broker_records_order_without_fill_or_position(
+    legacy_sqlite_db: Path,
+):
+    from quant_trading.execution.broker import DryRunBrokerAdapter
+
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    dry_run_broker = DryRunBrokerAdapter()
+    paper.broker = dry_run_broker
+    strategy = RecordingBuyStrategy()
+    account_id = paper.create_account(
+        name="Dry Run Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    summary = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with session_scope(engine) as session:
+        order = session.scalar(select(PaperOrderORM).where(PaperOrderORM.run_id == run_id))
+        fill_count = session.scalar(
+            select(func.count()).select_from(PaperFillORM).where(PaperFillORM.run_id == run_id)
+        )
+        position_count = session.scalar(
+            select(func.count())
+            .select_from(PaperPositionORM)
+            .where(PaperPositionORM.account_id == account_id)
+        )
+
+    assert summary.orders_created == 1
+    assert summary.orders_filled == 0
+    assert summary.fills_created == 0
+    assert order.status == "skipped"
+    assert order.risk_decision == "approved"
+    assert fill_count == 0
+    assert position_count == 0
+    assert len(dry_run_broker.submitted_requests) == 1

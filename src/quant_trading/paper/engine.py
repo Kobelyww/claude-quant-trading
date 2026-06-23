@@ -12,7 +12,11 @@ from quant_trading.core.enums import (
     StrategyStatus,
 )
 from quant_trading.core.models import Fill
-from quant_trading.execution.simulator import SimulatedBroker
+from quant_trading.execution.broker import (
+    BrokerAdapter,
+    SimulatedBrokerAdapter,
+    broker_order_request_from_intent,
+)
 from quant_trading.portfolio.accounting import apply_fill
 from quant_trading.paper.repositories import PaperStateRepository
 from quant_trading.risk.engine import RiskEngine
@@ -43,11 +47,15 @@ class PaperTradingEngine:
         risk_engine: RiskEngine,
         commission_rate: Decimal = Decimal("0.0003"),
         slippage_rate: Decimal = Decimal("0.001"),
+        broker_adapter: BrokerAdapter | None = None,
     ):
         self.engine = engine
         self.initial_cash = initial_cash
         self.risk_engine = risk_engine
-        self.broker = SimulatedBroker(commission_rate=commission_rate, slippage_rate=slippage_rate)
+        self.broker = broker_adapter or SimulatedBrokerAdapter(
+            commission_rate=commission_rate,
+            slippage_rate=slippage_rate,
+        )
 
     def create_account(
         self,
@@ -142,7 +150,16 @@ class PaperTradingEngine:
                     orders_rejected += 1
                     continue
 
-                fill = self.broker.execute_market_order(intent, latest)
+                request = broker_order_request_from_intent(
+                    intent,
+                    latest,
+                    client_order_id=f"paper-{run.id}-{order.id}",
+                )
+                broker_result = self.broker.submit_order(request, latest)
+                if broker_result.fill is None:
+                    repository.mark_order_skipped(order, decision.decision.value)
+                    continue
+                fill = broker_result.fill
                 fill = Fill(
                     order_id=order.id,
                     instrument_id=fill.instrument_id,

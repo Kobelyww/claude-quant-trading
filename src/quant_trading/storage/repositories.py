@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from quant_trading.core.enums import Market
 from quant_trading.core.models import Bar
-from quant_trading.storage.models import InstrumentORM, MarketBarORM
+from quant_trading.storage.models import InstrumentORM, MarketBarORM, WorkflowRunORM
 
 
 class InstrumentRepository:
@@ -123,3 +123,76 @@ class MarketDataRepository:
             )
             for row in rows
         ]
+
+
+class WorkflowRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_running(
+        self,
+        command_name: str,
+        request_payload: str,
+        started_at: datetime,
+    ) -> WorkflowRunORM:
+        row = WorkflowRunORM(
+            command_name=command_name,
+            status="running",
+            request_payload=request_payload,
+            result_payload="{}",
+            started_at=started_at,
+            created_at=started_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def mark_succeeded(
+        self,
+        row: WorkflowRunORM,
+        result_payload: str,
+        finished_at: datetime,
+        duration_ms: int,
+        created_object_type: str | None,
+        created_object_id: int | None,
+    ) -> WorkflowRunORM:
+        row.status = "succeeded"
+        row.result_payload = result_payload
+        row.error_message = None
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        row.created_object_type = created_object_type
+        row.created_object_id = created_object_id
+        self.session.flush()
+        return row
+
+    def mark_failed(
+        self,
+        row: WorkflowRunORM,
+        error_message: str,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> WorkflowRunORM:
+        row.status = "failed"
+        row.error_message = error_message
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        status: str | None = None,
+        command_name: str | None = None,
+        limit: int = 50,
+    ) -> list[WorkflowRunORM]:
+        statement = select(WorkflowRunORM).order_by(WorkflowRunORM.id.desc()).limit(limit)
+        if status:
+            statement = statement.where(WorkflowRunORM.status == status)
+        if command_name:
+            statement = statement.where(WorkflowRunORM.command_name == command_name)
+        return list(self.session.scalars(statement).all())
+
+    def get(self, workflow_run_id: int) -> WorkflowRunORM | None:
+        return self.session.get(WorkflowRunORM, workflow_run_id)

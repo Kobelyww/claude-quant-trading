@@ -69,3 +69,21 @@ def test_settings_reject_unknown_job_executor():
         AppSettings(job_executor="celery")
 
     assert "QUANT_JOB_EXECUTOR must be inline or rq" in str(exc_info.value)
+
+
+def test_settings_default_trading_is_disabled():
+    settings = AppSettings()
+
+    assert settings.trading_enabled is False
+    assert settings.broker_mode == "simulated"
+
+
+def test_settings_accepts_dry_run_broker_mode_and_rejects_unknown():
+    settings = AppSettings(broker_mode="dry_run")
+
+    assert settings.broker_mode == "dry_run"
+
+    with pytest.raises(ValidationError) as exc_info:
+        AppSettings(broker_mode="live")
+
+    assert "QUANT_BROKER_MODE must be simulated or dry_run" in str(exc_info.value)

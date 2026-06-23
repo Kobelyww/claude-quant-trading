@@ -31,6 +31,8 @@ class AppSettings(BaseSettings):
     )
     job_executor: str = Field(default="inline", validation_alias="QUANT_JOB_EXECUTOR")
     redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
+    trading_enabled: bool = Field(default=False, validation_alias="QUANT_TRADING_ENABLED")
+    broker_mode: str = Field(default="simulated", validation_alias="QUANT_BROKER_MODE")
 
     @field_validator("public_routes", mode="before")
     @classmethod
@@ -53,6 +55,14 @@ class AppSettings(BaseSettings):
             raise ValueError("QUANT_JOB_EXECUTOR must be inline or rq")
         return executor
 
+    @field_validator("broker_mode", mode="before")
+    @classmethod
+    def normalize_broker_mode(cls, value: object) -> str:
+        broker_mode = str(value or "simulated").strip().lower()
+        if broker_mode not in {"simulated", "dry_run"}:
+            raise ValueError("QUANT_BROKER_MODE must be simulated or dry_run")
+        return broker_mode
+
     @model_validator(mode="after")
     def require_api_token_for_auth(self) -> "AppSettings":
         if self.require_auth and not (self.api_token or "").strip():
@@ -61,6 +71,7 @@ class AppSettings(BaseSettings):
             self.api_token = self.api_token.strip() or None
         self.auth_header = self.auth_header.strip() or "Authorization"
         self.redis_url = self.redis_url.strip() or "redis://localhost:6379/0"
+        self.broker_mode = self.broker_mode.strip() or "simulated"
         self.public_routes = [
             route if route.startswith("/") else f"/{route}" for route in self.public_routes
         ]

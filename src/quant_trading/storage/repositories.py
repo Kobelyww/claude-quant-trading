@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,7 +10,9 @@ from quant_trading.core.models import Bar
 from quant_trading.storage.models import (
     DataSyncRunORM,
     InstrumentORM,
+    JobEventORM,
     JobRunORM,
+    JobScheduleORM,
     MarketBarORM,
     WorkflowRunORM,
 )
@@ -281,6 +284,41 @@ class JobRunRepository:
         self.session.flush()
         return row
 
+    def update_progress(
+        self,
+        row: JobRunORM,
+        progress: int,
+        updated_at: datetime,
+    ) -> JobRunORM:
+        row.progress = progress
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_cancel_requested(
+        self,
+        row: JobRunORM,
+        updated_at: datetime,
+    ) -> JobRunORM:
+        row.status = "cancel_requested"
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_cancelled(
+        self,
+        row: JobRunORM,
+        finished_at: datetime,
+        duration_ms: int | None = None,
+    ) -> JobRunORM:
+        row.status = "cancelled"
+        row.error_message = "cancelled"
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        row.updated_at = finished_at
+        self.session.flush()
+        return row
+
     def list_recent(
         self,
         *,
@@ -297,6 +335,146 @@ class JobRunRepository:
 
     def get(self, job_run_id: int) -> JobRunORM | None:
         return self.session.get(JobRunORM, job_run_id)
+
+
+class JobEventRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(
+        self,
+        job_run_id: int,
+        event_type: str,
+        message: str = "",
+        *,
+        progress: int | None = None,
+        payload: dict | None = None,
+        created_at: datetime,
+    ) -> JobEventORM:
+        row = JobEventORM(
+            job_run_id=job_run_id,
+            event_type=event_type,
+            message=message,
+            progress=progress,
+            payload=json.dumps(payload or {}, sort_keys=True),
+            created_at=created_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_for_job(self, job_run_id: int) -> list[JobEventORM]:
+        return list(
+            self.session.scalars(
+                select(JobEventORM)
+                .where(JobEventORM.job_run_id == job_run_id)
+                .order_by(JobEventORM.id)
+            ).all()
+        )
+
+    def list_recent(self, *, limit: int = 50) -> list[JobEventORM]:
+        return list(
+            self.session.scalars(
+                select(JobEventORM).order_by(JobEventORM.id.desc()).limit(limit)
+            ).all()
+        )
+
+
+class JobScheduleRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(
+        self,
+        name: str,
+        job_type: str,
+        request_payload: str,
+        schedule_type: str,
+        interval_seconds: int,
+        enabled: bool,
+        next_run_at: datetime,
+        created_at: datetime,
+    ) -> JobScheduleORM:
+        row = JobScheduleORM(
+            name=name,
+            job_type=job_type,
+            request_payload=request_payload,
+            schedule_type=schedule_type,
+            interval_seconds=interval_seconds,
+            enabled=enabled,
+            next_run_at=next_run_at,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def update(
+        self,
+        row: JobScheduleORM,
+        *,
+        enabled: bool | None = None,
+        request_payload: str | None = None,
+        interval_seconds: int | None = None,
+        next_run_at: datetime | None = None,
+        updated_at: datetime,
+    ) -> JobScheduleORM:
+        if enabled is not None:
+            row.enabled = enabled
+        if request_payload is not None:
+            row.request_payload = request_payload
+        if interval_seconds is not None:
+            row.interval_seconds = interval_seconds
+        if next_run_at is not None:
+            row.next_run_at = next_run_at
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_submitted(
+        self,
+        row: JobScheduleORM,
+        job_run_id: int,
+        ran_at: datetime,
+        next_run_at: datetime,
+    ) -> JobScheduleORM:
+        row.last_run_at = ran_at
+        row.last_job_run_id = job_run_id
+        row.next_run_at = next_run_at
+        row.updated_at = ran_at
+        self.session.flush()
+        return row
+
+    def list_due(self, now: datetime) -> list[JobScheduleORM]:
+        return list(
+            self.session.scalars(
+                select(JobScheduleORM)
+                .where(JobScheduleORM.enabled.is_(True))
+                .where(JobScheduleORM.next_run_at <= now)
+                .order_by(JobScheduleORM.next_run_at, JobScheduleORM.id)
+            ).all()
+        )
+
+    def list_recent(
+        self,
+        *,
+        enabled: bool | None = None,
+        job_type: str | None = None,
+        limit: int = 50,
+    ) -> list[JobScheduleORM]:
+        statement = select(JobScheduleORM).order_by(JobScheduleORM.id.desc()).limit(limit)
+        if enabled is not None:
+            statement = statement.where(JobScheduleORM.enabled.is_(enabled))
+        if job_type:
+            statement = statement.where(JobScheduleORM.job_type == job_type)
+        return list(self.session.scalars(statement).all())
+
+    def get(self, schedule_id: int) -> JobScheduleORM | None:
+        return self.session.get(JobScheduleORM, schedule_id)
+
+    def get_by_name(self, name: str) -> JobScheduleORM | None:
+        return self.session.scalar(select(JobScheduleORM).where(JobScheduleORM.name == name))
 
 
 class DataSyncRunRepository:

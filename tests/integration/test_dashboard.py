@@ -211,6 +211,31 @@ def test_dashboard_displays_job_runs(legacy_sqlite_db: Path):
     assert "succeeded" in html
 
 
+def test_dashboard_displays_data_sync_runs():
+    from datetime import UTC, datetime
+
+    from quant_trading.storage.repositories import DataSyncRunRepository
+
+    client, engine = make_client()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with session_scope(engine) as session:
+        repo = DataSyncRunRepository(session)
+        row = repo.create_running(
+            "akshare", "000001", "a_stock", "stock", "CNY", "SZSE", None, None, 1, now
+        )
+        repo.mark_succeeded(row, imported_bars=10, finished_at=now, duration_ms=20)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "Data Sync Runs" in html
+    assert "akshare" in html
+    assert "000001" in html
+    assert "10" in html
+    assert "succeeded" in html
+
+
 def test_failed_dashboard_action_creates_visible_failed_workflow_run(
     legacy_sqlite_db: Path,
 ):

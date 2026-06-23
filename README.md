@@ -18,6 +18,7 @@ This milestone turns the project into a testable operations workbench:
 - Migrating runtime schema with Alembic.
 - Recording workflow command audit history in `workflow_runs`.
 - Tracking queued import, backtest, and paper tick execution lifecycle in `job_runs`.
+- Syncing provider-backed daily market data with audit history in `data_sync_runs`.
 - Completing the local loop: import legacy data -> run MA Cross backtest -> create paper account/run -> trigger paper tick -> inspect results.
 
 This project does not place real broker or exchange orders. Command APIs and dashboard actions
@@ -89,6 +90,9 @@ http://localhost:8000/jobs/{job_run_id}
 http://localhost:8000/jobs/import-legacy
 http://localhost:8000/jobs/backtests/ma-cross
 http://localhost:8000/jobs/paper/runs/{run_id}/tick
+http://localhost:8000/jobs/market-data/sync
+http://localhost:8000/data-sync-runs
+http://localhost:8000/data-sync-runs/{sync_run_id}
 ```
 
 By default the API service reads `DATABASE_URL`. In Docker Compose it points at PostgreSQL:
@@ -242,6 +246,30 @@ curl http://127.0.0.1:8000/jobs/1
 
 Docker Compose sets `QUANT_JOB_EXECUTOR=rq` so API requests enqueue jobs and the worker executes them. This still does not place broker or exchange orders.
 
+## Market Data Sync
+
+Stage 6 adds provider-backed daily market-data sync with audit rows in `data_sync_runs`.
+
+Create a sync job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/market-data/sync \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"akshare","symbol":"000001","start":"2026-01-01","end":"2026-06-23"}'
+```
+
+Inspect sync history:
+
+```bash
+curl http://127.0.0.1:8000/data-sync-runs
+curl http://127.0.0.1:8000/data-sync-runs/1
+```
+
+The sync path stores normalized daily bars idempotently and records provider, symbol, range,
+status, imported bar count, linked job id, and capped error text. Tests use fake providers;
+real local AkShare sync requires installing the optional `.[data]` dependencies. This still does
+not place broker or exchange orders.
+
 ## Job Tasks
 
 The current task functions live in `quant_trading.jobs.tasks`:
@@ -296,7 +324,7 @@ They are kept for migration reference only. New product code lives under `src/qu
 
 Next productization stages:
 
-- Add scheduled jobs, cancellation, and live progress streaming for queued work.
+- Add scheduled sync, cancellation, and live progress streaming for queued work.
 - Add broker adapter interfaces only after paper-trading command contracts are stable.
 - Add multi-user authorization before exposing this as a public service.
 - Add incremental migrations for legacy hand-created SQLite databases.

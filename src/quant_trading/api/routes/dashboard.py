@@ -13,6 +13,7 @@ from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import (
     BacktestRunORM,
     CashLedgerORM,
+    DataSyncRunORM,
     InstrumentORM,
     JobRunORM,
     MarketBarORM,
@@ -25,7 +26,11 @@ from quant_trading.storage.models import (
     RiskDecisionORM,
     WorkflowRunORM,
 )
-from quant_trading.storage.repositories import JobRunRepository, WorkflowRunRepository
+from quant_trading.storage.repositories import (
+    DataSyncRunRepository,
+    JobRunRepository,
+    WorkflowRunRepository,
+)
 from quant_trading.workflows.operations import (
     create_paper_account,
     import_legacy_data,
@@ -191,6 +196,7 @@ def _collect_state(request: Request) -> dict[str, Any]:
             "latest_bar": session.scalar(select(func.max(MarketBarORM.timestamp))),
             "workflow_runs": WorkflowRunRepository(session).list_recent(limit=20),
             "job_runs": JobRunRepository(session).list_recent(limit=20),
+            "data_sync_runs": DataSyncRunRepository(session).list_recent(limit=20),
             "backtests": _latest(session, BacktestRunORM),
             "accounts": _latest(session, PaperAccountORM),
             "runs": _latest(session, PaperRunORM),
@@ -264,6 +270,7 @@ def _render_dashboard(
   </section>
   {_workflow_runs_table(state)}
   {_job_runs_table(state)}
+  {_data_sync_runs_table(state)}
   {_table("Backtest Runs", ["ID", "Strategy", "Symbol", "Initial Cash", "Final Equity", "Status"], state["backtests"], lambda r: [f"#{r.id}", r.strategy_name, r.symbol, r.initial_cash, r.final_equity, r.status])}
   {_table("Paper Accounts", ["ID", "Name", "Currency", "Initial Cash", "Status", "Created"], state["accounts"], lambda r: [f"#{r.id}", r.name, r.base_currency, r.initial_cash, r.status, r.created_at])}
   {_table("Paper Runs", ["ID", "Account", "Strategy", "Symbol", "Status", "Last Processed"], state["runs"], lambda r: [f"#{r.id}", f"#{r.account_id}", r.strategy_name, r.symbol, r.status, r.last_processed_at])}
@@ -354,6 +361,35 @@ def _job_runs_table(state: dict[str, Any]) -> str:
             r.error_message or "",
         ],
     )
+
+
+def _data_sync_runs_table(state: dict[str, Any]) -> str:
+    return _table(
+        "Data Sync Runs",
+        ["ID", "Provider", "Symbol", "Status", "Bars", "Range", "Job", "Duration", "Error"],
+        state["data_sync_runs"],
+        lambda r: [
+            f"#{r.id}",
+            r.provider,
+            r.symbol,
+            r.status,
+            r.imported_bars,
+            _date_range(r),
+            f"#{r.job_run_id}" if r.job_run_id else "",
+            f"{r.duration_ms} ms" if r.duration_ms is not None else "",
+            r.error_message or "",
+        ],
+    )
+
+
+def _date_range(row: DataSyncRunORM) -> str:
+    if row.start_date and row.end_date:
+        return f"{row.start_date} to {row.end_date}"
+    if row.start_date:
+        return f"from {row.start_date}"
+    if row.end_date:
+        return f"through {row.end_date}"
+    return ""
 
 
 def _table(

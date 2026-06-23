@@ -29,6 +29,8 @@ class AppSettings(BaseSettings):
         default_factory=lambda: ["/health"],
         validation_alias="QUANT_PUBLIC_ROUTES",
     )
+    job_executor: str = Field(default="inline", validation_alias="QUANT_JOB_EXECUTOR")
+    redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
 
     @field_validator("public_routes", mode="before")
     @classmethod
@@ -43,6 +45,14 @@ class AppSettings(BaseSettings):
             return routes or ["/health"]
         raise TypeError("QUANT_PUBLIC_ROUTES must be a comma-separated string or list")
 
+    @field_validator("job_executor", mode="before")
+    @classmethod
+    def normalize_job_executor(cls, value: object) -> str:
+        executor = str(value or "inline").strip().lower()
+        if executor not in {"inline", "rq"}:
+            raise ValueError("QUANT_JOB_EXECUTOR must be inline or rq")
+        return executor
+
     @model_validator(mode="after")
     def require_api_token_for_auth(self) -> "AppSettings":
         if self.require_auth and not (self.api_token or "").strip():
@@ -50,6 +60,7 @@ class AppSettings(BaseSettings):
         if self.api_token is not None:
             self.api_token = self.api_token.strip() or None
         self.auth_header = self.auth_header.strip() or "Authorization"
+        self.redis_url = self.redis_url.strip() or "redis://localhost:6379/0"
         self.public_routes = [
             route if route.startswith("/") else f"/{route}" for route in self.public_routes
         ]

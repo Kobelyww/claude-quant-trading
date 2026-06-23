@@ -45,3 +45,27 @@ def test_settings_parse_comma_separated_public_routes():
     settings = AppSettings(public_routes="/health,/ready")
 
     assert settings.public_routes == ["/health", "/ready"]
+
+
+def test_settings_default_to_inline_job_executor(monkeypatch):
+    monkeypatch.delenv("QUANT_JOB_EXECUTOR", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+    settings = AppSettings()
+
+    assert settings.job_executor == "inline"
+    assert settings.redis_url == "redis://localhost:6379/0"
+
+
+def test_settings_accept_rq_job_executor():
+    settings = AppSettings(job_executor="RQ", redis_url="redis://redis:6379/0")
+
+    assert settings.job_executor == "rq"
+    assert settings.redis_url == "redis://redis:6379/0"
+
+
+def test_settings_reject_unknown_job_executor():
+    with pytest.raises(ValidationError) as exc_info:
+        AppSettings(job_executor="celery")
+
+    assert "QUANT_JOB_EXECUTOR must be inline or rq" in str(exc_info.value)

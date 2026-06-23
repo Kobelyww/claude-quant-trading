@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from quant_trading.core.enums import Market
 from quant_trading.core.models import Bar
-from quant_trading.storage.models import InstrumentORM, MarketBarORM, WorkflowRunORM
+from quant_trading.storage.models import InstrumentORM, JobRunORM, MarketBarORM, WorkflowRunORM
 
 
 class InstrumentRepository:
@@ -196,3 +196,98 @@ class WorkflowRunRepository:
 
     def get(self, workflow_run_id: int) -> WorkflowRunORM | None:
         return self.session.get(WorkflowRunORM, workflow_run_id)
+
+
+class JobRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_queued(
+        self,
+        job_type: str,
+        request_payload: str,
+        queued_at: datetime,
+    ) -> JobRunORM:
+        row = JobRunORM(
+            job_type=job_type,
+            status="queued",
+            progress=0,
+            request_payload=request_payload,
+            result_payload="{}",
+            queued_at=queued_at,
+            created_at=queued_at,
+            updated_at=queued_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def mark_enqueued(
+        self,
+        row: JobRunORM,
+        rq_job_id: str,
+        updated_at: datetime,
+    ) -> JobRunORM:
+        row.rq_job_id = rq_job_id
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_running(self, row: JobRunORM, started_at: datetime) -> JobRunORM:
+        row.status = "running"
+        row.progress = 10
+        row.started_at = started_at
+        row.updated_at = started_at
+        self.session.flush()
+        return row
+
+    def mark_succeeded(
+        self,
+        row: JobRunORM,
+        result_payload: str,
+        workflow_run_id: int | None,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> JobRunORM:
+        row.status = "succeeded"
+        row.progress = 100
+        row.result_payload = result_payload
+        row.error_message = None
+        row.workflow_run_id = workflow_run_id
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        row.updated_at = finished_at
+        self.session.flush()
+        return row
+
+    def mark_failed(
+        self,
+        row: JobRunORM,
+        error_message: str,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> JobRunORM:
+        row.status = "failed"
+        row.error_message = error_message
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        row.updated_at = finished_at
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        status: str | None = None,
+        job_type: str | None = None,
+        limit: int = 50,
+    ) -> list[JobRunORM]:
+        statement = select(JobRunORM).order_by(JobRunORM.id.desc()).limit(limit)
+        if status:
+            statement = statement.where(JobRunORM.status == status)
+        if job_type:
+            statement = statement.where(JobRunORM.job_type == job_type)
+        return list(self.session.scalars(statement).all())
+
+    def get(self, job_run_id: int) -> JobRunORM | None:
+        return self.session.get(JobRunORM, job_run_id)

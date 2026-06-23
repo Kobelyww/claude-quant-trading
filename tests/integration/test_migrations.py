@@ -17,6 +17,7 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
     tables = set(inspect(engine).get_table_names())
 
     assert "workflow_runs" in tables
+    assert "job_runs" in tables
     assert "instruments" in tables
     assert "market_bars" in tables
     assert "backtest_runs" in tables

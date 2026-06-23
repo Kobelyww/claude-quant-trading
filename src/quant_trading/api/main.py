@@ -13,6 +13,7 @@ from quant_trading.api.routes import (
     instruments,
     jobs,
     paper,
+    schedules,
     workflows,
 )
 from quant_trading.config import AppSettings
@@ -49,6 +50,7 @@ def create_app(engine: Engine | None = None, settings: AppSettings | None = None
     app.include_router(backtests.router)
     app.include_router(paper.router)
     app.include_router(jobs.router)
+    app.include_router(schedules.router)
     app.include_router(data_sync.router)
     app.include_router(workflows.router)
     app.include_router(dashboard.router)

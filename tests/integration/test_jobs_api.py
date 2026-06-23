@@ -134,3 +134,33 @@ def test_inline_market_data_sync_job_api_returns_succeeded_job(monkeypatch):
     assert payload["job_type"] == "market_data_sync"
     assert payload["status"] == "succeeded"
     assert payload["result_payload"]["imported_bars"] == 1
+
+
+def test_job_cancel_api_cancels_queued_job_and_events_api_lists_timeline():
+    from quant_trading.jobs.runtime import IMPORT_LEGACY, job_payload_dumps, utcnow
+    from quant_trading.storage.db import session_scope
+    from quant_trading.storage.repositories import JobEventRepository, JobRunRepository
+
+    client, engine = make_client(AppSettings(job_executor="rq", redis_url="redis://fake:6379/0"))
+    with session_scope(engine) as session:
+        row = JobRunRepository(session).create_queued(
+            IMPORT_LEGACY,
+            job_payload_dumps({"legacy_db_path": "legacy.sqlite3"}),
+            utcnow(),
+        )
+        JobEventRepository(session).record(
+            row.id,
+            "queued",
+            "job queued",
+            progress=0,
+            created_at=utcnow(),
+        )
+        job_run_id = row.id
+
+    cancel_response = client.post(f"/jobs/{job_run_id}/cancel")
+    events_response = client.get(f"/jobs/{job_run_id}/events")
+
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "cancelled"
+    assert events_response.status_code == 200
+    assert [row["event_type"] for row in events_response.json()] == ["queued", "cancelled"]

@@ -15,10 +15,11 @@ from quant_trading.jobs.runtime import (
     MARKET_DATA_SYNC,
     PAPER_RUN_TICK,
 )
+from quant_trading.jobs.cancellation import cancel_job_run
 from quant_trading.jobs.service import submit_job_run
 from quant_trading.storage.db import session_scope
-from quant_trading.storage.models import JobRunORM
-from quant_trading.storage.repositories import JobRunRepository
+from quant_trading.storage.models import JobEventORM, JobRunORM
+from quant_trading.storage.repositories import JobEventRepository, JobRunRepository
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -99,6 +100,30 @@ def list_jobs(
         return [_job_payload(row) for row in rows]
 
 
+@router.post("/{job_run_id}/cancel")
+def cancel_job(job_run_id: int, request: Request) -> dict[str, Any]:
+    try:
+        return _job_payload(cancel_job_run(request.app.state.engine, job_run_id))
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("job run not found"):
+            raise HTTPException(status_code=404, detail=message) from exc
+        if message.startswith("cannot cancel terminal job"):
+            raise HTTPException(status_code=409, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+
+
+@router.get("/{job_run_id}/events")
+def list_job_events(job_run_id: int, request: Request) -> list[dict[str, Any]]:
+    with session_scope(request.app.state.engine) as session:
+        if JobRunRepository(session).get(job_run_id) is None:
+            raise HTTPException(status_code=404, detail="job run not found")
+        return [
+            _job_event_payload(row)
+            for row in JobEventRepository(session).list_for_job(job_run_id)
+        ]
+
+
 @router.get("/{job_run_id}")
 def get_job(job_run_id: int, request: Request) -> dict[str, Any]:
     with session_scope(request.app.state.engine) as session:
@@ -125,6 +150,18 @@ def _job_payload(row: JobRunORM) -> dict[str, Any]:
         "duration_ms": row.duration_ms,
         "created_at": _iso(row.created_at),
         "updated_at": _iso(row.updated_at),
+    }
+
+
+def _job_event_payload(row: JobEventORM) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "job_run_id": row.job_run_id,
+        "event_type": row.event_type,
+        "message": row.message,
+        "progress": row.progress,
+        "payload": _json_loads(row.payload),
+        "created_at": _iso(row.created_at),
     }
 
 

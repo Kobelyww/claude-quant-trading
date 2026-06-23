@@ -318,6 +318,9 @@ class JobScheduleORM(Base):
         nullable=True,
         index=True,
     )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lock_acquired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

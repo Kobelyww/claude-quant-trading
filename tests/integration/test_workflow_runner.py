@@ -47,6 +47,19 @@ def test_runner_records_successful_command():
     assert run.duration_ms is not None
 
 
+def test_runner_can_return_workflow_run_id_with_result():
+    engine = make_engine_with_schema()
+
+    execution = WorkflowCommandRunner(engine).run_with_audit(
+        "paper_create_account",
+        {"name": "Audit Paper"},
+        lambda: {"account_id": 9},
+    )
+
+    assert execution.result == {"account_id": 9}
+    assert execution.workflow_run_id == 1
+
+
 def test_runner_records_failed_command_and_reraises():
     engine = make_engine_with_schema()
 

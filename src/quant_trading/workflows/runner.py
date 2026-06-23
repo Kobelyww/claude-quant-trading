@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 import json
 import time
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 from sqlalchemy import Engine
 
@@ -13,6 +14,13 @@ from quant_trading.storage.db import session_scope
 from quant_trading.storage.repositories import WorkflowRunRepository
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class WorkflowCommandExecution(Generic[T]):
+    result: T
+    workflow_run_id: int
+
 
 COMMAND_CREATED_OBJECTS = {
     "backtest_ma_cross": ("backtest_run", "run_id"),
@@ -32,6 +40,14 @@ class WorkflowCommandRunner:
         request_payload: dict[str, Any],
         callback: Callable[[], T],
     ) -> T:
+        return self.run_with_audit(command_name, request_payload, callback).result
+
+    def run_with_audit(
+        self,
+        command_name: str,
+        request_payload: dict[str, Any],
+        callback: Callable[[], T],
+    ) -> WorkflowCommandExecution[T]:
         started_at = _utcnow()
         started_counter = time.perf_counter()
         with session_scope(self.engine) as session:
@@ -75,7 +91,7 @@ class WorkflowCommandRunner:
                     created_object_type=created_type,
                     created_object_id=created_id,
                 )
-        return result
+        return WorkflowCommandExecution(result=result, workflow_run_id=workflow_run_id)
 
 
 def infer_created_object(

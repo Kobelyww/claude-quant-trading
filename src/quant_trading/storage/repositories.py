@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 import json
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from quant_trading.core.enums import Market
@@ -448,7 +448,47 @@ class JobScheduleRepository:
         row.last_run_at = ran_at
         row.last_job_run_id = job_run_id
         row.next_run_at = next_run_at
+        row.locked_until = None
+        row.locked_by = None
+        row.lock_acquired_at = None
         row.updated_at = ran_at
+        self.session.flush()
+        return row
+
+    def acquire_due_lease(
+        self,
+        schedule_id: int,
+        *,
+        now: datetime,
+        lease_until: datetime,
+        locked_by: str,
+    ) -> bool:
+        result = self.session.execute(
+            update(JobScheduleORM)
+            .where(JobScheduleORM.id == schedule_id)
+            .where(JobScheduleORM.enabled.is_(True))
+            .where(JobScheduleORM.next_run_at <= now)
+            .where(
+                or_(
+                    JobScheduleORM.locked_until.is_(None),
+                    JobScheduleORM.locked_until <= now,
+                )
+            )
+            .values(
+                locked_until=lease_until,
+                locked_by=locked_by[:128],
+                lock_acquired_at=now,
+                updated_at=now,
+            )
+        )
+        self.session.flush()
+        return result.rowcount == 1
+
+    def clear_lease(self, row: JobScheduleORM, updated_at: datetime) -> JobScheduleORM:
+        row.locked_until = None
+        row.locked_by = None
+        row.lock_acquired_at = None
+        row.updated_at = updated_at
         self.session.flush()
         return row
 
@@ -458,6 +498,12 @@ class JobScheduleRepository:
                 select(JobScheduleORM)
                 .where(JobScheduleORM.enabled.is_(True))
                 .where(JobScheduleORM.next_run_at <= now)
+                .where(
+                    or_(
+                        JobScheduleORM.locked_until.is_(None),
+                        JobScheduleORM.locked_until <= now,
+                    )
+                )
                 .order_by(JobScheduleORM.next_run_at, JobScheduleORM.id)
             ).all()
         )

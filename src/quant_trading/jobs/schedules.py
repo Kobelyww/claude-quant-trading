@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import json
+import socket
 from typing import Any
 
 from sqlalchemy import Engine
@@ -84,7 +85,15 @@ def run_due_schedules(
     settings: AppSettings,
     now: datetime,
     queue_factory,
+    *,
+    scheduler_id: str | None = None,
+    lease_seconds: int = 300,
 ) -> list[dict[str, Any]]:
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be at least 1")
+    locked_by = (scheduler_id or _default_scheduler_id())[:128]
+    lease_until = now + timedelta(seconds=lease_seconds)
+
     with session_scope(engine) as session:
         due_ids = [row.id for row in JobScheduleRepository(session).list_due(now)]
 
@@ -92,8 +101,15 @@ def run_due_schedules(
     for schedule_id in due_ids:
         with session_scope(engine) as session:
             repo = JobScheduleRepository(session)
+            if not repo.acquire_due_lease(
+                schedule_id,
+                now=now,
+                lease_until=lease_until,
+                locked_by=locked_by,
+            ):
+                continue
             schedule = repo.get(schedule_id)
-            if schedule is None or not schedule.enabled or schedule.next_run_at > now:
+            if schedule is None:
                 continue
             payload = _loads_payload(schedule.request_payload)
             next_run_at = _advance_interval(
@@ -104,7 +120,16 @@ def run_due_schedules(
             schedule_name = schedule.name
             job_type = schedule.job_type
 
-        row = submit_job_run(engine, settings, job_type, payload, queue_factory)
+        try:
+            row = submit_job_run(engine, settings, job_type, payload, queue_factory)
+        except Exception:
+            with session_scope(engine) as session:
+                repo = JobScheduleRepository(session)
+                schedule = repo.get(schedule_id)
+                if schedule is not None:
+                    repo.clear_lease(schedule, updated_at=_utcnow())
+            raise
+
         with session_scope(engine) as session:
             repo = JobScheduleRepository(session)
             schedule = repo.get(schedule_id)
@@ -154,3 +179,7 @@ def _advance_interval(next_run_at: datetime, interval_seconds: int, now: datetim
 
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _default_scheduler_id() -> str:
+    return f"{socket.gethostname()}:scheduler"

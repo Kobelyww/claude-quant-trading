@@ -90,6 +90,7 @@ http://localhost:8000/jobs
 http://localhost:8000/jobs/{job_run_id}
 http://localhost:8000/jobs/{job_run_id}/cancel
 http://localhost:8000/jobs/{job_run_id}/events
+http://localhost:8000/jobs/{job_run_id}/stream
 http://localhost:8000/jobs/import-legacy
 http://localhost:8000/jobs/backtests/ma-cross
 http://localhost:8000/jobs/paper/runs/{run_id}/tick
@@ -287,6 +288,22 @@ curl -X POST http://127.0.0.1:8000/jobs/1/cancel
 ```
 
 The scheduler stores only job configuration and operational metadata. It does not store provider credentials, does not place real broker orders, and does not add live exchange execution.
+
+## Live Job Progress Streaming
+
+Stage 8 adds an SSE stream for job-event timelines:
+
+- `GET /jobs/{job_run_id}/stream` streams `job_event`, `heartbeat`, and `stream_end` messages.
+- `after_event_id` lets clients resume from the last event they processed.
+- The dashboard automatically subscribes to the most recent active job when browser `EventSource` is available.
+
+Example:
+
+```bash
+curl -N "http://127.0.0.1:8000/jobs/1/stream?after_event_id=0"
+```
+
+The stream is a read-side operational view over `job_events`. It does not add websocket command channels, broker execution, market tick streaming, or provider credential storage.
 
 ## Market Data Sync
 

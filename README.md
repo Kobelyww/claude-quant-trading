@@ -14,6 +14,9 @@ This milestone turns the project into a testable operations workbench:
 - Running a persistent, risk-gated paper trading account with simulated orders, fills, positions, cash ledger, and snapshots.
 - Reading health, instruments, backtests, and paper snapshots through FastAPI.
 - Running the operations workbench through command APIs and a server-rendered dashboard.
+- Protecting dashboard, read APIs, and workflow commands with optional token auth.
+- Migrating runtime schema with Alembic.
+- Recording workflow command audit history in `workflow_runs`.
 - Completing the local loop: import legacy data -> run MA Cross backtest -> create paper account/run -> trigger paper tick -> inspect results.
 
 This project does not place real broker or exchange orders. Command APIs and dashboard actions
@@ -34,6 +37,7 @@ src/quant_trading/
   risk/         reusable risk engine and rules
   storage/      SQLAlchemy models, sessions, and legacy importer
   strategy/     strategy base class, registry, and MA cross strategy
+  workflows/    synchronous operator workflows and command audit runner
 ```
 
 ## Requirements
@@ -78,6 +82,7 @@ http://localhost:8000/workflows/backtests/ma-cross
 http://localhost:8000/workflows/paper/accounts
 http://localhost:8000/workflows/paper/runs/ma-cross
 http://localhost:8000/workflows/paper/runs/{run_id}/tick
+http://localhost:8000/workflows/runs
 ```
 
 By default the API service reads `DATABASE_URL`. In Docker Compose it points at PostgreSQL:
@@ -146,6 +151,61 @@ Run one paper tick:
 curl -X POST http://127.0.0.1:8000/workflows/paper/runs/1/tick
 ```
 
+## Production Runtime And Safety MVP
+
+Stage 4 hardens the local operations workbench for protected paper-trading use. It still does not place real broker orders.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `QUANT_APP_ENV` | `local` | Environment label shown in the dashboard. |
+| `DATABASE_URL` | `sqlite+pysqlite:///quant_trading.db` | SQLAlchemy database URL used by the API and Alembic. |
+| `QUANT_REQUIRE_AUTH` | `false` | Enables token protection for dashboard, read APIs, and workflow commands. |
+| `QUANT_API_TOKEN` | empty | Required when `QUANT_REQUIRE_AUTH=true`. |
+| `QUANT_AUTH_HEADER` | `Authorization` | Optional custom header name. `Authorization: Bearer ...` and `X-API-Token` are always supported. |
+| `QUANT_PUBLIC_ROUTES` | `/health` | Comma-separated public paths. |
+
+Protected local run:
+
+```bash
+QUANT_REQUIRE_AUTH=true QUANT_API_TOKEN=local-token \
+PYTHONPATH=src python -m uvicorn --factory quant_trading.api.main:create_app \
+  --host 127.0.0.1 --port 8000
+```
+
+Authenticated examples:
+
+```bash
+curl -H "Authorization: Bearer local-token" http://127.0.0.1:8000/dashboard
+curl -H "X-API-Token: local-token" http://127.0.0.1:8000/workflows/runs
+```
+
+Schema migration:
+
+```bash
+DATABASE_URL=sqlite+pysqlite:///quant_trading.db PYTHONPATH=src alembic upgrade head
+```
+
+`create_all()` remains useful for tests and quick local experiments. Production-like local runs should use Alembic so schema state is explicit. Older SQLite files created before this migration stage may need backup and recreation or a manual migration.
+
+Workflow command APIs and dashboard actions write audit rows to `workflow_runs`.
+
+Tracked commands:
+
+- `import_legacy`
+- `backtest_ma_cross`
+- `paper_create_account`
+- `paper_start_ma_cross_run`
+- `paper_run_tick`
+
+Read audit history:
+
+```bash
+curl -H "Authorization: Bearer local-token" http://127.0.0.1:8000/workflows/runs
+curl -H "Authorization: Bearer local-token" http://127.0.0.1:8000/workflows/runs/1
+```
+
+Audit rows include status, summarized request payload, result payload, error message, created object reference, start time, finish time, and duration. API tokens are never stored in workflow payloads.
+
 ## Job Tasks
 
 The current task functions live in `quant_trading.jobs.tasks`:
@@ -184,7 +244,8 @@ legacy/django_app/db.sqlite3
 
 The importer maps `data_center_symbol` to `instruments` and `data_center_marketdata` to `market_bars`.
 Existing SQLite databases are not automatically altered by `create_all()`; upgrade old databases with
-migrations for new paper tables/columns, especially `portfolio_snapshots.run_id`.
+migrations for new runtime tables and paper tables/columns, especially `workflow_runs` and
+`portfolio_snapshots.run_id`.
 
 Run the importer through the job task or call `import_legacy_sqlite()` from
 `quant_trading.storage.migrate_legacy` in tests and local scripts.
@@ -200,9 +261,9 @@ They are kept for migration reference only. New product code lives under `src/qu
 Next productization stages:
 
 - Add queued execution and progress tracking for long imports/backtests.
-- Add authentication before exposing command endpoints beyond local development.
 - Add broker adapter interfaces only after paper-trading command contracts are stable.
-- Add Alembic migrations for existing databases instead of relying on `create_all()`.
+- Add multi-user authorization before exposing this as a public service.
+- Add incremental migrations for legacy hand-created SQLite databases.
 
 ## Safety
 

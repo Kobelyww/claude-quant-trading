@@ -87,3 +87,50 @@ def test_jobs_require_auth_when_enabled():
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Unauthorized"}
+
+
+def test_inline_market_data_sync_job_api_returns_succeeded_job(monkeypatch):
+    from datetime import date
+    from decimal import Decimal
+
+    from quant_trading.core.enums import Market
+    from quant_trading.core.models import Bar
+    from quant_trading.data.providers.registry import ProviderRegistry
+    from quant_trading.jobs import runtime as runtime_module
+
+    class FakeProvider:
+        name = "fake"
+
+        def fetch_daily_bars(self, instrument_id, symbol, start, end):
+            return [
+                Bar(
+                    instrument_id=instrument_id,
+                    symbol=symbol,
+                    market=Market.A_STOCK,
+                    timestamp=date(2026, 1, 1),
+                    open=Decimal("10"),
+                    high=Decimal("11"),
+                    low=Decimal("9"),
+                    close=Decimal("10.5"),
+                    volume=Decimal("1000"),
+                    source=self.name,
+                )
+            ]
+
+    monkeypatch.setattr(
+        runtime_module,
+        "build_default_provider_registry",
+        lambda: ProviderRegistry([FakeProvider()]),
+    )
+    client, _ = make_client()
+
+    response = client.post(
+        "/jobs/market-data/sync",
+        json={"provider": "fake", "symbol": "000001", "start": "2026-01-01", "end": "2026-01-02"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job_type"] == "market_data_sync"
+    assert payload["status"] == "succeeded"
+    assert payload["result_payload"]["imported_bars"] == 1

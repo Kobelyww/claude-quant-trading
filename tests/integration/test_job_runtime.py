@@ -1,12 +1,17 @@
 import json
 from pathlib import Path
+from datetime import date
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
 
+from quant_trading.core.enums import Market
+from quant_trading.core.models import Bar
 from quant_trading.jobs.runtime import (
     BACKTEST_MA_CROSS,
     IMPORT_LEGACY,
+    MARKET_DATA_SYNC,
     execute_job_run_with_engine,
     job_payload_dumps,
     utcnow,
@@ -97,3 +102,47 @@ def test_execute_unsupported_job_type_marks_failed():
     assert result["status"] == "failed"
     assert job.status == "failed"
     assert "unsupported job type" in job.error_message
+
+
+def test_execute_market_data_sync_job_records_success(monkeypatch):
+    class FakeProvider:
+        name = "fake"
+
+        def fetch_daily_bars(self, instrument_id, symbol, start, end):
+            return [
+                Bar(
+                    instrument_id=instrument_id,
+                    symbol=symbol,
+                    market=Market.A_STOCK,
+                    timestamp=date(2026, 1, 1),
+                    open=Decimal("10"),
+                    high=Decimal("11"),
+                    low=Decimal("9"),
+                    close=Decimal("10.5"),
+                    volume=Decimal("1000"),
+                    source=self.name,
+                )
+            ]
+
+    from quant_trading.data.providers.registry import ProviderRegistry
+    from quant_trading.jobs import runtime as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module,
+        "build_default_provider_registry",
+        lambda: ProviderRegistry([FakeProvider()]),
+    )
+    engine = make_engine_with_schema()
+    job_run_id = create_job(
+        engine,
+        MARKET_DATA_SYNC,
+        {"provider": "fake", "symbol": "000001", "start": "2026-01-01", "end": "2026-01-02"},
+    )
+
+    result = execute_job_run_with_engine(engine, job_run_id)
+
+    job = get_job(engine, job_run_id)
+    assert result["status"] == "succeeded"
+    assert job.status == "succeeded"
+    assert job.workflow_run_id == 1
+    assert json.loads(job.result_payload)["imported_bars"] == 1

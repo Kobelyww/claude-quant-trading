@@ -8,6 +8,8 @@ from typing import Any
 
 from sqlalchemy import Engine
 
+from quant_trading.data.providers.registry import build_default_provider_registry
+from quant_trading.data.sync import sync_daily_market_data
 from quant_trading.storage.db import make_engine, session_scope
 from quant_trading.storage.repositories import JobRunRepository
 from quant_trading.workflows.operations import (
@@ -20,7 +22,8 @@ from quant_trading.workflows.runner import WorkflowCommandRunner, workflow_paylo
 IMPORT_LEGACY = "import_legacy"
 BACKTEST_MA_CROSS = "backtest_ma_cross"
 PAPER_RUN_TICK = "paper_run_tick"
-SUPPORTED_JOB_TYPES = {IMPORT_LEGACY, BACKTEST_MA_CROSS, PAPER_RUN_TICK}
+MARKET_DATA_SYNC = "market_data_sync"
+SUPPORTED_JOB_TYPES = {IMPORT_LEGACY, BACKTEST_MA_CROSS, PAPER_RUN_TICK, MARKET_DATA_SYNC}
 
 
 def execute_job_run(database_url: str, job_run_id: int) -> dict[str, Any]:
@@ -39,6 +42,8 @@ def execute_job_run_with_engine(engine: Engine, job_run_id: int) -> dict[str, An
         repo.mark_running(job, started_at=started_at)
         job_type = job.job_type
         request_payload = _json_loads(job.request_payload)
+        if job_type == MARKET_DATA_SYNC:
+            request_payload = {**request_payload, "job_run_id": job_run_id}
 
     try:
         if job_type not in SUPPORTED_JOB_TYPES:
@@ -100,6 +105,16 @@ def _execute_payload(engine: Engine, job_type: str, payload: dict[str, Any]) -> 
         )
     if job_type == PAPER_RUN_TICK:
         return run_paper_tick(engine, int(payload["run_id"]))
+    if job_type == MARKET_DATA_SYNC:
+        return sync_daily_market_data(
+            engine,
+            provider_name=str(payload.get("provider", "akshare")),
+            symbol=str(payload["symbol"]),
+            start=payload.get("start"),
+            end=payload.get("end"),
+            registry=build_default_provider_registry(),
+            job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,
+        )
     raise ValueError(f"unsupported job type: {job_type}")
 
 

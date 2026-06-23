@@ -57,6 +57,15 @@ def test_jobs_api_requires_auth_when_enabled():
     assert response.json() == {"detail": "Unauthorized"}
 
 
+def test_data_sync_api_requires_auth_when_enabled():
+    client = make_client()
+
+    response = client.get("/data-sync-runs")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
+
+
 def test_bearer_token_allows_protected_request():
     client = make_client()
 

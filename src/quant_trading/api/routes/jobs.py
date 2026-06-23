@@ -5,16 +5,29 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from quant_trading.api.routes.workflows import ImportLegacyRequest, MACrossBacktestRequest
 from quant_trading.jobs.queue import make_queue
-from quant_trading.jobs.runtime import BACKTEST_MA_CROSS, IMPORT_LEGACY, PAPER_RUN_TICK
+from quant_trading.jobs.runtime import (
+    BACKTEST_MA_CROSS,
+    IMPORT_LEGACY,
+    MARKET_DATA_SYNC,
+    PAPER_RUN_TICK,
+)
 from quant_trading.jobs.service import submit_job_run
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import JobRunORM
 from quant_trading.storage.repositories import JobRunRepository
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+class MarketDataSyncRequest(BaseModel):
+    provider: str = "akshare"
+    symbol: str = Field(min_length=1)
+    start: str | None = None
+    end: str | None = None
 
 
 @router.post("/import-legacy")
@@ -51,6 +64,19 @@ def create_paper_tick_job(run_id: int, request: Request) -> dict[str, Any]:
             request.app.state.settings,
             PAPER_RUN_TICK,
             {"run_id": run_id},
+            make_queue,
+        )
+    )
+
+
+@router.post("/market-data/sync")
+def create_market_data_sync_job(payload: MarketDataSyncRequest, request: Request) -> dict[str, Any]:
+    return _job_payload(
+        submit_job_run(
+            request.app.state.engine,
+            request.app.state.settings,
+            MARKET_DATA_SYNC,
+            payload.model_dump(mode="json"),
             make_queue,
         )
     )

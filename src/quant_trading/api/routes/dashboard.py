@@ -22,7 +22,9 @@ from quant_trading.storage.models import (
     PaperRunORM,
     PortfolioSnapshotORM,
     RiskDecisionORM,
+    WorkflowRunORM,
 )
+from quant_trading.storage.repositories import WorkflowRunRepository
 from quant_trading.workflows.operations import (
     create_paper_account,
     import_legacy_data,
@@ -30,6 +32,7 @@ from quant_trading.workflows.operations import (
     run_paper_tick,
     start_ma_cross_paper_run,
 )
+from quant_trading.workflows.runner import WorkflowCommandRunner
 
 router = APIRouter(tags=["dashboard"])
 T = TypeVar("T")
@@ -45,6 +48,8 @@ async def dashboard_import_legacy(request: Request) -> HTMLResponse | RedirectRe
     form = await request.form()
     return _run_dashboard_action(
         request,
+        "import_legacy",
+        {"legacy_db_path": str(form.get("legacy_db_path", ""))},
         lambda: import_legacy_data(
             request.app.state.engine,
             str(form.get("legacy_db_path", "")),
@@ -58,6 +63,14 @@ async def dashboard_run_backtest(request: Request) -> HTMLResponse | RedirectRes
     form = await request.form()
     return _run_dashboard_action(
         request,
+        "backtest_ma_cross",
+        {
+            "symbol": str(form.get("symbol", "")),
+            "short_window": str(form.get("short_window", "")),
+            "long_window": str(form.get("long_window", "")),
+            "order_size": str(form.get("order_size", "")),
+            "initial_cash": str(form.get("initial_cash", "")),
+        },
         lambda: run_ma_cross_backtest(
             request.app.state.engine,
             symbol=str(form.get("symbol", "")),
@@ -74,10 +87,14 @@ async def dashboard_run_backtest(request: Request) -> HTMLResponse | RedirectRes
 async def dashboard_create_account(request: Request) -> HTMLResponse | RedirectResponse:
     form = await request.form()
     name = str(form.get("name", "")).strip()
-    if not name:
-        return _dashboard_response(request, error="name is required", status_code=400)
     return _run_dashboard_action(
         request,
+        "paper_create_account",
+        {
+            "name": name,
+            "initial_cash": str(form.get("initial_cash", "")),
+            "base_currency": str(form.get("base_currency", "CNY")),
+        },
         lambda: create_paper_account(
             request.app.state.engine,
             name=name,
@@ -93,6 +110,15 @@ async def dashboard_create_paper_run(request: Request) -> HTMLResponse | Redirec
     form = await request.form()
     return _run_dashboard_action(
         request,
+        "paper_start_ma_cross_run",
+        {
+            "account_id": str(form.get("account_id", "")),
+            "symbol": str(form.get("symbol", "")),
+            "short_window": str(form.get("short_window", "")),
+            "long_window": str(form.get("long_window", "")),
+            "order_size": str(form.get("order_size", "")),
+            "max_order_value": str(form.get("max_order_value", "100000")),
+        },
         lambda: start_ma_cross_paper_run(
             request.app.state.engine,
             account_id=int(str(form.get("account_id", ""))),
@@ -111,6 +137,8 @@ async def dashboard_run_tick(request: Request) -> HTMLResponse | RedirectRespons
     form = await request.form()
     return _run_dashboard_action(
         request,
+        "paper_run_tick",
+        {"run_id": str(form.get("run_id", ""))},
         lambda: run_paper_tick(
             request.app.state.engine,
             int(str(form.get("run_id", ""))),
@@ -121,11 +149,17 @@ async def dashboard_run_tick(request: Request) -> HTMLResponse | RedirectRespons
 
 def _run_dashboard_action(
     request: Request,
+    command_name: str,
+    request_payload: dict[str, Any],
     callback: Callable[[], T],
     notice: str,
 ) -> HTMLResponse | RedirectResponse:
     try:
-        callback()
+        WorkflowCommandRunner(request.app.state.engine).run(
+            command_name,
+            request_payload,
+            callback,
+        )
     except Exception as exc:
         return _dashboard_response(request, error=str(exc), status_code=400)
     return RedirectResponse(f"/dashboard?notice={quote(notice)}", status_code=303)
@@ -146,11 +180,15 @@ def _dashboard_response(
 
 def _collect_state(request: Request) -> dict[str, Any]:
     engine = request.app.state.engine
+    settings = request.app.state.settings
     with session_scope(engine) as session:
         return {
             "db_label": engine.url.render_as_string(hide_password=True),
+            "app_env": settings.app_env,
+            "auth_enabled": settings.require_auth,
             "instrument_count": session.scalar(select(func.count(InstrumentORM.id))) or 0,
             "latest_bar": session.scalar(select(func.max(MarketBarORM.timestamp))),
+            "workflow_runs": WorkflowRunRepository(session).list_recent(limit=20),
             "backtests": _latest(session, BacktestRunORM),
             "accounts": _latest(session, PaperAccountORM),
             "runs": _latest(session, PaperRunORM),
@@ -204,6 +242,7 @@ def _render_dashboard(
     .notice {{ margin: 10px 0; padding: 8px; background: #eaf7ee; border: 1px solid #9dd6ad; }}
     .error {{ margin: 10px 0; padding: 8px; background: #fff0f0; border: 1px solid #dc9a9a; color: #8a1f1f; }}
     .empty {{ color: #647084; }}
+    .status-failed {{ color: #8a1f1f; font-weight: 600; }}
   </style>
 </head>
 <body>
@@ -213,12 +252,15 @@ def _render_dashboard(
   {error_html}
   <section class="meta">
     <div class="metric"><span>Database</span>{_e(state["db_label"])}</div>
+    <div class="metric"><span>Environment</span>{_e(state["app_env"])}</div>
+    <div class="metric"><span>Auth</span>{_e("enabled" if state["auth_enabled"] else "disabled")}</div>
     <div class="metric"><span>Instruments</span>{_e(state["instrument_count"])}</div>
     <div class="metric"><span>Latest Imported Bar</span>{_e(state["latest_bar"] or "none")}</div>
   </section>
   <section class="forms" aria-label="Dashboard actions">
     {_render_forms(state)}
   </section>
+  {_workflow_runs_table(state)}
   {_table("Backtest Runs", ["ID", "Strategy", "Symbol", "Initial Cash", "Final Equity", "Status"], state["backtests"], lambda r: [f"#{r.id}", r.strategy_name, r.symbol, r.initial_cash, r.final_equity, r.status])}
   {_table("Paper Accounts", ["ID", "Name", "Currency", "Initial Cash", "Status", "Created"], state["accounts"], lambda r: [f"#{r.id}", r.name, r.base_currency, r.initial_cash, r.status, r.created_at])}
   {_table("Paper Runs", ["ID", "Account", "Strategy", "Symbol", "Status", "Last Processed"], state["runs"], lambda r: [f"#{r.id}", f"#{r.account_id}", r.strategy_name, r.symbol, r.status, r.last_processed_at])}
@@ -276,6 +318,23 @@ def _render_forms(state: dict[str, Any]) -> str:
     """
 
 
+def _workflow_runs_table(state: dict[str, Any]) -> str:
+    return _table(
+        "Workflow Runs",
+        ["ID", "Command", "Status", "Started", "Duration", "Created Object", "Error"],
+        state["workflow_runs"],
+        lambda r: [
+            f"#{r.id}",
+            r.command_name,
+            r.status,
+            r.started_at,
+            f"{r.duration_ms} ms" if r.duration_ms is not None else "",
+            _object_ref(r),
+            r.error_message or "",
+        ],
+    )
+
+
 def _table(
     title: str,
     columns: list[str],
@@ -290,11 +349,22 @@ def _table(
     else:
         body = "".join(
             "<tr>"
-            + "".join(f"<td>{_e(value)}</td>" for value in row_values(row))
+            + "".join(_table_cell(value) for value in row_values(row))
             + "</tr>"
             for row in rows
         )
     return f"<section><h2>{_e(title)}</h2><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></section>"
+
+
+def _table_cell(value: Any) -> str:
+    cell_class = ' class="status-failed"' if value == "failed" else ""
+    return f"<td{cell_class}>{_e(value)}</td>"
+
+
+def _object_ref(row: WorkflowRunORM) -> str:
+    if not row.created_object_type or row.created_object_id is None:
+        return ""
+    return f"{row.created_object_type} #{row.created_object_id}"
 
 
 def _e(value: Any) -> str:

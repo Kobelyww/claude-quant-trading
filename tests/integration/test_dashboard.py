@@ -176,3 +176,42 @@ def test_dashboard_backtest_action_rejects_symbol_without_market_bars(
     assert import_response.status_code == 200
     assert response.status_code == 400
     assert "no market bars found" in response.text
+
+
+def test_dashboard_displays_workflow_run_history(legacy_sqlite_db: Path):
+    client, _ = make_client()
+    client.post("/workflows/import-legacy", json={"legacy_db_path": str(legacy_sqlite_db)})
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "Workflow Runs" in html
+    assert "import_legacy" in html
+    assert "succeeded" in html
+    assert "Environment" in html
+    assert "Auth" in html
+
+
+def test_failed_dashboard_action_creates_visible_failed_workflow_run(
+    legacy_sqlite_db: Path,
+):
+    client, _ = make_client()
+    client.post("/workflows/import-legacy", json={"legacy_db_path": str(legacy_sqlite_db)})
+
+    response = client.post(
+        "/dashboard/actions/backtests/ma-cross",
+        data={
+            "symbol": "NO_SUCH",
+            "short_window": "3",
+            "long_window": "8",
+            "order_size": "50",
+            "initial_cash": "100000",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "no market bars found" in response.text
+    assert "Workflow Runs" in response.text
+    assert "backtest_ma_cross" in response.text
+    assert "failed" in response.text

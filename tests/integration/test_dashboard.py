@@ -281,6 +281,50 @@ def test_dashboard_displays_job_schedules_and_events():
     assert "job queued" in response.text
 
 
+def test_dashboard_renders_job_event_stream_hook_for_active_job():
+    from datetime import UTC, datetime
+
+    from quant_trading.jobs.runtime import MARKET_DATA_SYNC, job_payload_dumps
+    from quant_trading.storage.repositories import JobEventRepository, JobRunRepository
+
+    client, engine = make_client()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with session_scope(engine) as session:
+        job = JobRunRepository(session).create_queued(
+            MARKET_DATA_SYNC,
+            job_payload_dumps({"provider": "fake", "symbol": "000001"}),
+            now,
+        )
+        JobRunRepository(session).mark_running(job, started_at=now)
+        event = JobEventRepository(session).record(
+            job.id,
+            "running",
+            "job started",
+            progress=10,
+            created_at=now,
+        )
+        job_id = job.id
+        event_id = event.id
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    html = response.text
+    assert f'data-job-stream-url="/jobs/{job_id}/stream?after_event_id={event_id}"' in html
+    assert 'id="job-stream-status"' in html
+    assert "new EventSource" in html
+    assert 'id="job-events-body"' in html
+
+
+def test_dashboard_omits_job_event_stream_hook_without_active_job():
+    client, _ = make_client()
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "data-job-stream-url" not in response.text
+
+
 def test_failed_dashboard_action_creates_visible_failed_workflow_run(
     legacy_sqlite_db: Path,
 ):

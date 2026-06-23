@@ -46,6 +46,7 @@ from quant_trading.workflows.runner import WorkflowCommandRunner
 
 router = APIRouter(tags=["dashboard"])
 T = TypeVar("T")
+TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -192,6 +193,18 @@ def _collect_state(request: Request) -> dict[str, Any]:
     engine = request.app.state.engine
     settings = request.app.state.settings
     with session_scope(engine) as session:
+        job_runs = JobRunRepository(session).list_recent(limit=20)
+        job_events = JobEventRepository(session).list_recent(limit=30)
+        active_job = _active_job(job_runs)
+        active_job_latest_event_id = (
+            session.scalar(
+                select(func.max(JobEventORM.id)).where(
+                    JobEventORM.job_run_id == active_job.id
+                )
+            )
+            if active_job is not None
+            else None
+        )
         return {
             "db_label": engine.url.render_as_string(hide_password=True),
             "app_env": settings.app_env,
@@ -199,9 +212,11 @@ def _collect_state(request: Request) -> dict[str, Any]:
             "instrument_count": session.scalar(select(func.count(InstrumentORM.id))) or 0,
             "latest_bar": session.scalar(select(func.max(MarketBarORM.timestamp))),
             "workflow_runs": WorkflowRunRepository(session).list_recent(limit=20),
-            "job_runs": JobRunRepository(session).list_recent(limit=20),
+            "job_runs": job_runs,
             "job_schedules": JobScheduleRepository(session).list_recent(limit=20),
-            "job_events": JobEventRepository(session).list_recent(limit=30),
+            "job_events": job_events,
+            "active_job": active_job,
+            "active_job_latest_event_id": active_job_latest_event_id,
             "data_sync_runs": DataSyncRunRepository(session).list_recent(limit=20),
             "backtests": _latest(session, BacktestRunORM),
             "accounts": _latest(session, PaperAccountORM),
@@ -219,6 +234,13 @@ def _latest(session: Session, model: type[T], limit: int = 10) -> list[T]:
     return list(
         session.scalars(select(model).order_by(model.id.desc()).limit(limit)).all()
     )
+
+
+def _active_job(rows: list[JobRunORM]) -> JobRunORM | None:
+    for row in rows:
+        if row.status not in TERMINAL_JOB_STATUSES:
+            return row
+    return None
 
 
 def _render_dashboard(
@@ -260,7 +282,7 @@ def _render_dashboard(
   </style>
 </head>
 <body>
-<main>
+<main{_job_stream_attrs(state)}>
   <h1>Operations Workbench</h1>
   {notice_html}
   {error_html}
@@ -288,6 +310,7 @@ def _render_dashboard(
   {_table("Risk Decisions", ["ID", "Run", "Order", "Decision", "Rule", "Message"], state["risk_decisions"], lambda r: [f"#{r.id}", f"#{r.run_id}" if r.run_id else "", f"#{r.order_id}" if r.order_id else "", r.decision, r.rule_name, r.message])}
   {_table("Cash Ledger Rows", ["ID", "Account", "Run", "Event", "Amount", "Cash After", "Date"], state["ledger"], lambda r: [f"#{r.id}", f"#{r.account_id}", f"#{r.run_id}" if r.run_id else "", r.event_type, r.amount, r.cash_after, r.occurred_at])}
   {_table("Snapshots", ["ID", "Account", "Run", "Date", "Equity", "Cash", "Drawdown"], state["snapshots"], lambda r: [f"#{r.id}", f"#{r.account_id}", f"#{r.run_id}" if r.run_id else "", r.timestamp, r.equity, r.cash, r.drawdown])}
+  {_job_event_stream_script(state)}
 </main>
 </body>
 </html>"""
@@ -409,19 +432,114 @@ def _job_schedules_table(state: dict[str, Any]) -> str:
 
 
 def _job_events_table(state: dict[str, Any]) -> str:
-    return _table(
-        "Job Events",
-        ["ID", "Job", "Type", "Message", "Progress", "Created"],
-        state["job_events"],
-        lambda r: [
-            f"#{r.id}",
-            f"#{r.job_run_id}",
-            r.event_type,
-            r.message,
-            f"{r.progress}%" if r.progress is not None else "",
-            r.created_at,
-        ],
+    rows = state["job_events"]
+    head = "".join(
+        f"<th>{_e(column)}</th>"
+        for column in ["ID", "Job", "Type", "Message", "Progress", "Created"]
     )
+    if not rows:
+        body = '<tr><td class="empty" colspan="6">No rows</td></tr>'
+    else:
+        body = "".join(
+            f'<tr data-event-id="{_e(row.id)}">'
+            + "".join(
+                _table_cell(value)
+                for value in [
+                    f"#{row.id}",
+                    f"#{row.job_run_id}",
+                    row.event_type,
+                    row.message,
+                    f"{row.progress}%" if row.progress is not None else "",
+                    row.created_at,
+                ]
+            )
+            + "</tr>"
+            for row in rows
+        )
+    status = (
+        '<span id="job-stream-status" class="stream-status">waiting</span>'
+        if state.get("active_job") is not None
+        else ""
+    )
+    return (
+        f"<section><h2>Job Events {status}</h2>"
+        f'<table id="job-events-table"><thead><tr>{head}</tr></thead>'
+        f'<tbody id="job-events-body">{body}</tbody></table></section>'
+    )
+
+
+def _job_stream_attrs(state: dict[str, Any]) -> str:
+    active_job = state.get("active_job")
+    if active_job is None:
+        return ""
+    latest_event_id = state.get("active_job_latest_event_id") or 0
+    stream_url = f"/jobs/{active_job.id}/stream?after_event_id={latest_event_id}"
+    return (
+        f' data-job-stream-url="{_e(stream_url)}"'
+        f' data-job-stream-job-id="{_e(active_job.id)}"'
+        f' data-job-stream-after-event-id="{_e(latest_event_id)}"'
+    )
+
+
+def _job_event_stream_script(state: dict[str, Any]) -> str:
+    if state.get("active_job") is None:
+        return ""
+    return """
+  <script>
+  (function () {
+    const root = document.querySelector("[data-job-stream-url]");
+    const body = document.getElementById("job-events-body");
+    const status = document.getElementById("job-stream-status");
+    if (!root || !body || !status || !window.EventSource) {
+      return;
+    }
+    const seen = new Set(Array.from(body.querySelectorAll("[data-event-id]")).map((row) => row.dataset.eventId));
+    const source = new EventSource(root.dataset.jobStreamUrl);
+    status.textContent = "streaming";
+
+    function appendCell(row, value) {
+      const cell = document.createElement("td");
+      cell.textContent = value == null ? "" : String(value);
+      row.appendChild(cell);
+    }
+
+    source.addEventListener("job_event", function (message) {
+      const event = JSON.parse(message.data);
+      const id = String(event.id);
+      if (seen.has(id)) {
+        return;
+      }
+      seen.add(id);
+      const row = document.createElement("tr");
+      row.dataset.eventId = id;
+      appendCell(row, "#" + event.id);
+      appendCell(row, "#" + event.job_run_id);
+      appendCell(row, event.event_type);
+      appendCell(row, event.message);
+      appendCell(row, event.progress == null ? "" : event.progress + "%");
+      appendCell(row, event.created_at);
+      const empty = body.querySelector(".empty");
+      if (empty) {
+        body.textContent = "";
+      }
+      body.insertBefore(row, body.firstChild);
+      status.textContent = "live";
+    });
+
+    source.addEventListener("heartbeat", function () {
+      status.textContent = "live";
+    });
+
+    source.addEventListener("stream_end", function () {
+      status.textContent = "closed";
+      source.close();
+    });
+
+    source.onerror = function () {
+      status.textContent = "reconnecting";
+    };
+  }());
+  </script>"""
 
 
 def _date_range(row: DataSyncRunORM) -> str:

@@ -75,6 +75,27 @@ def test_job_events_api_requires_auth_when_enabled():
     assert response.json() == {"detail": "Unauthorized"}
 
 
+def test_job_stream_api_requires_auth_when_enabled():
+    client = make_client()
+
+    response = client.get("/jobs/1/stream")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
+
+
+def test_job_stream_api_allows_bearer_token_when_enabled():
+    client = make_client()
+
+    response = client.get(
+        "/jobs/1/stream",
+        headers={"Authorization": "Bearer local-token"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "job run not found"}
+
+
 def test_data_sync_api_requires_auth_when_enabled():
     client = make_client()
 

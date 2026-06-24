@@ -455,11 +455,12 @@ def test_missing_symbol_blocks_backtest_request():
     ("field", "value"),
     [
         ("thesis", "   "),
+        ("market_regime_assumption", None),
         ("entry_rules", []),
         ("risk_controls", {}),
     ],
 )
-def test_blank_string_and_empty_collection_required_fields_fail(field, value):
+def test_blank_none_and_empty_collection_required_fields_fail(field, value):
     result = validate_strategy_candidate(
         complete_ma_cross_spec(**{field: value}),
         request_symbol="000001",
@@ -468,3 +469,4 @@ def test_blank_string_and_empty_collection_required_fields_fail(field, value):
     assert result["validation_status"] == "failed"
     assert f"missing field: {field}" in result["validation_errors"]
     assert result["candidate_payload"] is None
+    assert result["backtest_request_payload"] is None

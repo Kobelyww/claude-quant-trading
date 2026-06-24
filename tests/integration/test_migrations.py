@@ -29,6 +29,7 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
     assert "paper_runs" in tables
     assert "broker_order_events" in tables
     assert "agent_runs" in tables
+    assert "agent_candidate_reviews" in tables
 
     schedule_columns = {column["name"] for column in inspector.get_columns("job_schedules")}
     assert {"locked_until", "locked_by", "lock_acquired_at"} <= schedule_columns
@@ -50,3 +51,25 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
         "duration_ms",
         "created_at",
     } <= agent_run_columns
+
+    candidate_review_columns = {
+        column["name"] for column in inspector.get_columns("agent_candidate_reviews")
+    }
+    assert {
+        "id",
+        "source_agent_run_id",
+        "status",
+        "symbol",
+        "strategy_name",
+        "candidate_payload",
+        "backtest_request_payload",
+        "operator",
+        "operator_note",
+        "backtest_job_run_id",
+        "backtest_run_id",
+        "review_agent_run_id",
+        "error_message",
+        "created_at",
+        "updated_at",
+        "decided_at",
+    } <= candidate_review_columns

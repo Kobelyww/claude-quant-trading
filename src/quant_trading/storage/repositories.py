@@ -9,6 +9,7 @@ from quant_trading.core.enums import Market
 from quant_trading.core.models import Bar
 from quant_trading.execution.broker import BrokerOrderRequest, BrokerOrderResult
 from quant_trading.storage.models import (
+    AgentCandidateReviewORM,
     AgentRunORM,
     BrokerOrderEventORM,
     DataSyncRunORM,
@@ -804,3 +805,174 @@ class AgentRunRepository:
 
     def get(self, agent_run_id: int) -> AgentRunORM | None:
         return self.session.get(AgentRunORM, agent_run_id)
+
+
+class AgentCandidateReviewRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_decision(
+        self,
+        *,
+        source_agent_run_id: int,
+        status: str,
+        symbol: str,
+        strategy_name: str,
+        candidate_payload: str,
+        backtest_request_payload: str,
+        operator: str,
+        operator_note: str,
+        decided_at: datetime | None,
+        created_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row = AgentCandidateReviewORM(
+            source_agent_run_id=source_agent_run_id,
+            status=status,
+            symbol=symbol,
+            strategy_name=strategy_name,
+            candidate_payload=candidate_payload,
+            backtest_request_payload=backtest_request_payload,
+            operator=operator,
+            operator_note=operator_note,
+            decided_at=decided_at,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def mark_backtest_submitted(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        backtest_job_run_id: int,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.status = "backtest_submitted"
+        row.backtest_job_run_id = backtest_job_run_id
+        row.error_message = None
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_backtest_succeeded(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        backtest_run_id: int,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.status = "backtest_succeeded"
+        row.backtest_run_id = backtest_run_id
+        row.error_message = None
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_backtest_failed(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        error_message: str,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.status = "backtest_failed"
+        row.error_message = error_message[:1000]
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def update_rejection(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        operator: str,
+        operator_note: str,
+        decided_at: datetime,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.status = "rejected"
+        row.operator = operator
+        row.operator_note = operator_note
+        row.decided_at = decided_at
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_review_requested(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        review_agent_run_id: int,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.status = "review_requested"
+        row.review_agent_run_id = review_agent_run_id
+        row.error_message = None
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_review_succeeded(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        review_agent_run_id: int,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.status = "review_succeeded"
+        row.review_agent_run_id = review_agent_run_id
+        row.error_message = None
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def mark_review_failed(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        review_agent_run_id: int,
+        error_message: str,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.status = "review_failed"
+        row.review_agent_run_id = review_agent_run_id
+        row.error_message = error_message[:1000]
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def get(self, review_id: int) -> AgentCandidateReviewORM | None:
+        return self.session.get(AgentCandidateReviewORM, review_id)
+
+    def get_by_source_agent_run_id(
+        self,
+        source_agent_run_id: int,
+    ) -> AgentCandidateReviewORM | None:
+        return self.session.scalar(
+            select(AgentCandidateReviewORM).where(
+                AgentCandidateReviewORM.source_agent_run_id == source_agent_run_id
+            )
+        )
+
+    def list_recent(
+        self,
+        *,
+        status: str | None = None,
+        symbol: str | None = None,
+        strategy_name: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentCandidateReviewORM]:
+        statement = select(AgentCandidateReviewORM).order_by(
+            AgentCandidateReviewORM.id.desc()
+        ).limit(limit)
+        if status:
+            statement = statement.where(AgentCandidateReviewORM.status == status)
+        if symbol:
+            statement = statement.where(AgentCandidateReviewORM.symbol == symbol)
+        if strategy_name:
+            statement = statement.where(
+                AgentCandidateReviewORM.strategy_name == strategy_name
+            )
+        return list(self.session.scalars(statement).all())

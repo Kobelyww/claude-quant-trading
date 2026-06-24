@@ -1,0 +1,152 @@
+import json
+from datetime import datetime
+
+from sqlalchemy import select
+
+from quant_trading.storage.db import create_all, make_engine, session_scope
+from quant_trading.storage.models import AgentCandidateReviewORM, AgentRunORM
+from quant_trading.storage.repositories import (
+    AgentCandidateReviewRepository,
+    AgentRunRepository,
+)
+
+
+def _create_source_agent_run(session):
+    row = AgentRunRepository(session).create_running(
+        agent_type="strategy_idea",
+        symbol="000001",
+        model_name="fake-llm",
+        request_payload="{}",
+        job_run_id=None,
+        started_at=datetime(2026, 6, 24, 9, 0, 0),
+    )
+    AgentRunRepository(session).mark_succeeded(
+        row,
+        metrics_payload="{}",
+        result_payload=json.dumps(
+            {
+                "parsed": True,
+                "validation_status": "passed",
+                "candidate_payload": {
+                    "strategy_name": "ma_cross",
+                    "symbol": "000001",
+                    "parameters": {
+                        "short_window": 5,
+                        "long_window": 20,
+                        "order_size": 100,
+                    },
+                    "requires_human_approval": True,
+                },
+                "backtest_request_payload": {
+                    "job_type": "backtest_ma_cross",
+                    "payload": {
+                        "symbol": "000001",
+                        "short_window": 5,
+                        "long_window": 20,
+                        "order_size": 100,
+                        "initial_cash": "100000",
+                    },
+                },
+                "requires_human_approval": True,
+            },
+            sort_keys=True,
+        ),
+        finished_at=datetime(2026, 6, 24, 9, 0, 1),
+        duration_ms=1,
+    )
+    return row
+
+
+def test_candidate_review_repository_lifecycle():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    now = datetime(2026, 6, 24, 9, 0, 0)
+
+    with session_scope(engine) as session:
+        source = _create_source_agent_run(session)
+        repo = AgentCandidateReviewRepository(session)
+        review = repo.create_decision(
+            source_agent_run_id=source.id,
+            status="approved",
+            symbol="000001",
+            strategy_name="ma_cross",
+            candidate_payload=json.dumps({"strategy_name": "ma_cross"}, sort_keys=True),
+            backtest_request_payload=json.dumps(
+                {"job_type": "backtest_ma_cross", "payload": {"symbol": "000001"}},
+                sort_keys=True,
+            ),
+            operator="local",
+            operator_note="approved for research backtest",
+            decided_at=now,
+            created_at=now,
+        )
+        review_id = review.id
+        repo.mark_backtest_submitted(review, backtest_job_run_id=7, updated_at=now)
+        repo.mark_backtest_succeeded(review, backtest_run_id=11, updated_at=now)
+        repo.mark_review_requested(review, review_agent_run_id=13, updated_at=now)
+        repo.mark_review_succeeded(review, review_agent_run_id=13, updated_at=now)
+
+    with session_scope(engine) as session:
+        review = AgentCandidateReviewRepository(session).get(review_id)
+        assert review is not None
+        assert review.source_agent_run_id == 1
+        assert review.status == "review_succeeded"
+        assert review.symbol == "000001"
+        assert review.strategy_name == "ma_cross"
+        assert review.operator == "local"
+        assert review.operator_note == "approved for research backtest"
+        assert review.backtest_job_run_id == 7
+        assert review.backtest_run_id == 11
+        assert review.review_agent_run_id == 13
+        assert review.error_message is None
+        assert AgentCandidateReviewRepository(session).get_by_source_agent_run_id(1).id == review_id
+        assert [row.id for row in AgentCandidateReviewRepository(session).list_recent()] == [review_id]
+
+
+def test_candidate_review_source_agent_run_is_unique():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    now = datetime(2026, 6, 24, 9, 0, 0)
+
+    with session_scope(engine) as session:
+        source = _create_source_agent_run(session)
+        source_id = source.id
+        repo = AgentCandidateReviewRepository(session)
+        repo.create_decision(
+            source_agent_run_id=source_id,
+            status="rejected",
+            symbol="000001",
+            strategy_name="ma_cross",
+            candidate_payload="{}",
+            backtest_request_payload="{}",
+            operator="local",
+            operator_note="insufficient thesis",
+            decided_at=now,
+            created_at=now,
+        )
+
+    with session_scope(engine) as session:
+        repo = AgentCandidateReviewRepository(session)
+        try:
+            repo.create_decision(
+                source_agent_run_id=source_id,
+                status="approved",
+                symbol="000001",
+                strategy_name="ma_cross",
+                candidate_payload="{}",
+                backtest_request_payload="{}",
+                operator="local",
+                operator_note="duplicate",
+                decided_at=now,
+                created_at=now,
+            )
+        except Exception as exc:
+            session.rollback()
+            assert "UNIQUE" in str(exc).upper() or "unique" in exc.__class__.__name__.lower()
+        else:
+            raise AssertionError("duplicate candidate review should violate unique source")
+
+    with session_scope(engine) as session:
+        rows = session.scalars(select(AgentCandidateReviewORM)).all()
+        assert len(rows) == 1
+        assert session.get(AgentRunORM, 1) is not None

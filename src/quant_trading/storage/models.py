@@ -395,3 +395,46 @@ class AgentRunORM(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentCandidateReviewORM(Base):
+    __tablename__ = "agent_candidate_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_agent_run_id",
+            name="uq_agent_candidate_reviews_source_agent_run_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_agent_run_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_runs.id"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    strategy_name: Mapped[str] = mapped_column(String(128), index=True)
+    candidate_payload: Mapped[str] = mapped_column(Text, default="{}")
+    backtest_request_payload: Mapped[str] = mapped_column(Text, default="{}")
+    operator: Mapped[str] = mapped_column(String(128), default="")
+    operator_note: Mapped[str] = mapped_column(Text, default="")
+    backtest_job_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    backtest_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("backtest_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    review_agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

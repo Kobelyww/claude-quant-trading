@@ -6,6 +6,7 @@ from sqlalchemy import Engine
 
 from quant_trading.api.auth import install_token_auth, workflow_command_name_for_path
 from quant_trading.api.routes import (
+    agent_candidates,
     agents,
     dashboard,
     backtests,
@@ -51,6 +52,7 @@ def create_app(engine: Engine | None = None, settings: AppSettings | None = None
     app.include_router(backtests.router)
     app.include_router(paper.router)
     app.include_router(agents.router)
+    app.include_router(agent_candidates.router)
     app.include_router(jobs.router)
     app.include_router(schedules.router)
     app.include_router(data_sync.router)

@@ -183,6 +183,46 @@ def test_parse_backtest_review_response_sanitizes_unsafe_text_variants(unsafe_te
     assert unsafe_text_lower not in serialized_fields
 
 
+@pytest.mark.parametrize(
+    "unsafe_readiness",
+    [
+        "buy",
+        "sell.",
+        "create a paper trading run",
+        "submit market orders after review",
+        "live market order after review",
+    ],
+)
+def test_parse_backtest_review_response_sanitizes_unsafe_readiness_values(
+    unsafe_readiness,
+):
+    parsed = parse_backtest_review_response(
+        json.dumps(
+            {
+                "summary": "Manual review needed.",
+                "risk_flags": [],
+                "overfit_warnings": [],
+                "paper_trading_readiness": unsafe_readiness,
+                "recommended_next_steps": ["run more research diagnostics"],
+            }
+        ),
+        candidate_review_id=7,
+        backtest_run_id=11,
+    )
+
+    fields = [
+        parsed["summary"],
+        *parsed["recommended_next_steps"],
+        *parsed["risk_flags"],
+        *parsed["overfit_warnings"],
+    ]
+    serialized_fields = json.dumps(fields, ensure_ascii=False).lower()
+    assert parsed["review_status"] == "needs_review"
+    assert parsed["paper_trading_readiness"] == "needs_review"
+    assert parsed["research_only"] is True
+    assert unsafe_readiness.lower() not in serialized_fields
+
+
 def test_parse_backtest_review_response_falls_back_for_unstructured_content():
     parsed = parse_backtest_review_response(
         "This is a narrative review, not JSON." * 100,

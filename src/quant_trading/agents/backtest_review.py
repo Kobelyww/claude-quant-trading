@@ -102,7 +102,8 @@ def parse_backtest_review_response(
     if not isinstance(decoded, dict):
         return _fallback_review(content, candidate_review_id, backtest_run_id)
 
-    readiness = _clean_text(decoded.get("paper_trading_readiness"))
+    raw_readiness = _clean_text(decoded.get("paper_trading_readiness"))
+    readiness = raw_readiness
     summary = _bounded_summary(decoded.get("summary"))
     risk_flags = _string_list(decoded.get("risk_flags"))
     overfit_warnings = _string_list(decoded.get("overfit_warnings"))
@@ -111,11 +112,10 @@ def parse_backtest_review_response(
     issues = []
     if readiness not in ALLOWED_PAPER_TRADING_READINESS:
         review_status = "needs_review"
-        invalid_value = readiness or "<missing>"
-        issues.append(f"invalid paper_trading_readiness: {invalid_value}")
+        issues.append("invalid paper_trading_readiness value")
         readiness = "needs_review"
     if _contains_unsafe_text(
-        [summary, *risk_flags, *overfit_warnings, *recommended_next_steps]
+        [raw_readiness, summary, *risk_flags, *overfit_warnings, *recommended_next_steps]
     ):
         review_status = "needs_review"
         readiness = "needs_review"

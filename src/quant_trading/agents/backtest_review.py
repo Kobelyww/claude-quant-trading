@@ -43,16 +43,33 @@ _UNSAFE_TEXT_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
+        r"\b(?:trade|trades|trading)\b.{0,40}\b"
+        r"(?:tomorrow|next\s+\w+|after\s+review|now|live|real\s+money)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\b(?:order|orders|market\s+order|market\s+orders)\b.{0,40}\b"
         r"(?:submit|place|send|create|execute)\b",
         re.IGNORECASE,
     ),
+    re.compile(r"\bgo\s+live\b", re.IGNORECASE),
     re.compile(
         r"\blive\s+"
         r"(?:trade|trades|trading|order|orders|market\s+order|market\s+orders)\b",
         re.IGNORECASE,
     ),
+    re.compile(r"\b(?:real\s+money|real\s+capital|production\s+trading)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:open|close)\b.{0,30}\b(?:long|short)\s+position\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:long|short)\s+position\b", re.IGNORECASE),
     re.compile(r"\bmarket\s+orders?\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:will|expect|expected|expects|expecting)\b.{0,40}\b"
+        r"(?:profitable|positive\s+returns?|profit|profits|profitability|returns?)\b",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\b(?:guarantee|guarantees|guaranteed|guaranteeing)\b.{0,40}\b"
         r"(?:profit|profits|profitability|return|returns|gain|gains)\b",
@@ -65,8 +82,14 @@ _UNSAFE_TEXT_PATTERNS = (
     ),
     re.compile(r"```", re.IGNORECASE),
     re.compile(r"\bdef\s+\w+\s*\(", re.IGNORECASE),
+    re.compile(r"\bclass\s+\w+\s*[:(]", re.IGNORECASE),
+    re.compile(r"\bimport\s+[\w.]+", re.IGNORECASE),
+    re.compile(r"\bfrom\s+[\w.]+\s+import\s+\w+", re.IGNORECASE),
+    re.compile(r"\bprint\s*\(", re.IGNORECASE),
+    re.compile(r"^\s*[A-Za-z_]\w*\s*=\s*.+", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*[A-Za-z_]\w*\s*\([^)]*\)\s*$", re.IGNORECASE | re.MULTILINE),
     re.compile(r"\b(?:executable|generated)\s+code\b", re.IGNORECASE),
-    re.compile(r"\bcode\s+(?:block|snippet)\b", re.IGNORECASE),
+    re.compile(r"\b(?:source\s+code|code\s+(?:block|snippet))\b", re.IGNORECASE),
 )
 
 
@@ -287,17 +310,12 @@ def _fallback_review(
     candidate_review_id: int,
     backtest_run_id: int,
 ) -> dict[str, Any]:
-    unsafe = _contains_unsafe_text([content])
     return {
         "candidate_review_id": candidate_review_id,
         "backtest_run_id": backtest_run_id,
         "review_status": "needs_review",
         "research_only": True,
-        "summary": (
-            "unstructured review output contained unsafe trading instruction text"
-            if unsafe
-            else _bounded_summary(content)
-        ),
+        "summary": "unstructured review output requires manual review",
         "risk_flags": ["unstructured_review_output"],
         "overfit_warnings": [],
         "paper_trading_readiness": "needs_review",

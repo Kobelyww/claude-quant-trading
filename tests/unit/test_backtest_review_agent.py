@@ -164,6 +164,16 @@ def test_parse_backtest_review_response_sanitizes_dangerous_structured_text():
         "```python\nprint('trade')\n```",
         "def strategy(): pass",
         "executable code",
+        "this will be profitable",
+        "expect positive returns next month",
+        "go live with this strategy",
+        "open a long position",
+        "trade 000001 tomorrow",
+        "import pandas as pd",
+        "class Strategy:",
+        "print('trade')",
+        "signal = prices.mean()",
+        "rebalance()",
     ],
 )
 def test_parse_backtest_review_response_sanitizes_unsafe_text_variants(unsafe_text):
@@ -206,6 +216,16 @@ def test_parse_backtest_review_response_sanitizes_unsafe_text_variants(unsafe_te
         "```python\nprint('trade')\n```",
         "def strategy(): pass",
         "executable code",
+        "this will be profitable",
+        "expect positive returns next month",
+        "go live with this strategy",
+        "open a long position",
+        "trade 000001 tomorrow",
+        "import pandas as pd",
+        "class Strategy:",
+        "print('trade')",
+        "signal = prices.mean()",
+        "rebalance()",
     ],
 )
 def test_parse_backtest_review_response_sanitizes_unsafe_fallback_content(unsafe_text):
@@ -219,7 +239,7 @@ def test_parse_backtest_review_response_sanitizes_unsafe_fallback_content(unsafe
     assert parsed["review_status"] == "needs_review"
     assert parsed["research_only"] is True
     assert parsed["paper_trading_readiness"] == "needs_review"
-    assert parsed["summary"] == "unstructured review output contained unsafe trading instruction text"
+    assert parsed["summary"] == "unstructured review output requires manual review"
     assert parsed["recommended_next_steps"] == [
         "review the backtest output manually before any further research action"
     ]
@@ -267,23 +287,26 @@ def test_parse_backtest_review_response_sanitizes_unsafe_readiness_values(
 
 
 def test_parse_backtest_review_response_falls_back_for_unstructured_content():
+    content = "This is a narrative review, not JSON." * 100
     parsed = parse_backtest_review_response(
-        "This is a narrative review, not JSON." * 100,
+        content,
         candidate_review_id=7,
         backtest_run_id=11,
     )
 
+    serialized = json.dumps(parsed, ensure_ascii=False)
     assert parsed["candidate_review_id"] == 7
     assert parsed["backtest_run_id"] == 11
     assert parsed["review_status"] == "needs_review"
     assert parsed["research_only"] is True
+    assert parsed["summary"] == "unstructured review output requires manual review"
     assert parsed["risk_flags"] == ["unstructured_review_output"]
     assert parsed["overfit_warnings"] == []
     assert parsed["paper_trading_readiness"] == "needs_review"
     assert parsed["recommended_next_steps"] == [
         "review the backtest output manually before any further research action"
     ]
-    assert len(parsed["summary"]) <= 500
+    assert content not in serialized
 
 
 def test_parse_backtest_review_response_falls_back_for_non_dict_json():

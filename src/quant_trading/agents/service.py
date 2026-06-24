@@ -11,9 +11,17 @@ from quant_trading.agents.llm import DeepSeekLLMClient, LLMClient
 from quant_trading.agents.market_analysis import build_market_analysis_prompt, compute_market_metrics
 from quant_trading.agents.models import (
     AGENT_MARKET_ANALYSIS,
+    AGENT_STRATEGY_IDEA,
     ERROR_MAX_CHARS,
+    MARKET_CONTEXT_MAX_CHARS,
     RESEARCH_DISCLAIMER,
+    REQUEST_VALUE_MAX_CHARS,
     MarketAnalysisRequest,
+    StrategyIdeaRequest,
+)
+from quant_trading.agents.strategy_idea import (
+    build_strategy_idea_prompt,
+    parse_strategy_idea_response,
 )
 from quant_trading.config import AppSettings
 from quant_trading.storage.db import session_scope
@@ -78,6 +86,85 @@ def run_market_analysis_agent(
                 AgentRunRepository(session).mark_succeeded(
                     row,
                     metrics_payload=_json_dumps(metrics),
+                    result_payload=_json_dumps(result_payload),
+                    finished_at=finished_at,
+                    duration_ms=_duration_ms(started_counter),
+                )
+        return result_payload
+    except Exception as exc:
+        finished_at = _utcnow()
+        with session_scope(engine) as session:
+            row = AgentRunRepository(session).get(agent_run_id)
+            if row is not None:
+                AgentRunRepository(session).mark_failed(
+                    row,
+                    _sanitize_error(exc),
+                    finished_at=finished_at,
+                    duration_ms=_duration_ms(started_counter),
+                )
+        raise
+
+
+def run_strategy_idea_agent(
+    engine: Engine,
+    request: StrategyIdeaRequest,
+    *,
+    llm_client: LLMClient | None = None,
+    job_run_id: int | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    settings = settings or AppSettings()
+    llm_client = llm_client or DeepSeekLLMClient.from_settings(settings)
+    started_at = _utcnow()
+    started_counter = time.perf_counter()
+    clean_request = StrategyIdeaRequest(
+        idea=request.idea[:REQUEST_VALUE_MAX_CHARS],
+        symbol=request.symbol.strip()[:32] if request.symbol else None,
+        market_context=request.market_context[:MARKET_CONTEXT_MAX_CHARS]
+        if request.market_context
+        else None,
+        constraints=request.constraints,
+    )
+    request_payload = _json_dumps(
+        {
+            "idea": clean_request.idea,
+            "symbol": clean_request.symbol,
+            "market_context": clean_request.market_context,
+            "constraints": clean_request.constraints,
+        }
+    )
+    with session_scope(engine) as session:
+        row = AgentRunRepository(session).create_running(
+            agent_type=AGENT_STRATEGY_IDEA,
+            symbol=clean_request.symbol,
+            model_name=getattr(llm_client, "model", "unknown"),
+            request_payload=request_payload,
+            job_run_id=job_run_id,
+            started_at=started_at,
+        )
+        agent_run_id = row.id
+
+    try:
+        prompt = build_strategy_idea_prompt(clean_request, settings.agent_prompt_max_chars)
+        response = llm_client.complete(prompt)
+        parsed_payload = parse_strategy_idea_response(
+            response.content[: settings.agent_result_max_chars]
+        )
+        result_payload = {
+            "agent_run_id": agent_run_id,
+            "agent_type": AGENT_STRATEGY_IDEA,
+            "symbol": clean_request.symbol,
+            "research_only": True,
+            "disclaimer": RESEARCH_DISCLAIMER,
+            **parsed_payload,
+        }
+        finished_at = _utcnow()
+        with session_scope(engine) as session:
+            row = AgentRunRepository(session).get(agent_run_id)
+            if row is not None:
+                AgentRunRepository(session).mark_succeeded(
+                    row,
+                    metrics_payload="{}",
                     result_payload=_json_dumps(result_payload),
                     finished_at=finished_at,
                     duration_ms=_duration_ms(started_counter),

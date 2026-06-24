@@ -5,6 +5,7 @@ from quant_trading.agents.models import (
     MarketAnalysisRequest,
     StrategyIdeaRequest,
 )
+from quant_trading.agents.service import run_market_analysis_agent, run_strategy_idea_agent
 
 __all__ = [
     "AGENT_MARKET_ANALYSIS",
@@ -12,4 +13,6 @@ __all__ = [
     "AgentResult",
     "MarketAnalysisRequest",
     "StrategyIdeaRequest",
+    "run_market_analysis_agent",
+    "run_strategy_idea_agent",
 ]

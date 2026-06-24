@@ -22,6 +22,12 @@ class QueueLike(Protocol):
         ...
 
 
+class JobSubmissionError(RuntimeError):
+    def __init__(self, message: str, *, job_run_id: int):
+        super().__init__(message)
+        self.job_run_id = job_run_id
+
+
 def submit_job_run(
     engine: Engine,
     settings: AppSettings,
@@ -48,8 +54,12 @@ def submit_job_run(
     if settings.job_executor == "inline":
         execute_job_run_with_engine(engine, job_run_id)
     elif settings.job_executor == "rq":
-        queue = queue_factory(settings.redis_url)
-        rq_job = queue.enqueue(execute_job_run, settings.database_url, job_run_id)
+        try:
+            queue = queue_factory(settings.redis_url)
+            rq_job = queue.enqueue(execute_job_run, settings.database_url, job_run_id)
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            raise JobSubmissionError(message, job_run_id=job_run_id) from exc
         with session_scope(engine) as session:
             repo = JobRunRepository(session)
             row = repo.get(job_run_id)

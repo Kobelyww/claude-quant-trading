@@ -82,6 +82,11 @@ http://localhost:8000/paper/runs
 http://localhost:8000/paper/snapshots
 http://localhost:8000/agent-runs
 http://localhost:8000/agent-runs/{agent_run_id}
+http://localhost:8000/agent-candidates
+http://localhost:8000/agent-candidates/{candidate_review_id}
+http://localhost:8000/agent-candidates/{agent_run_id}/approve
+http://localhost:8000/agent-candidates/{agent_run_id}/reject
+http://localhost:8000/agent-candidates/{candidate_review_id}/refresh-backtest
 http://localhost:8000/workflows/import-legacy
 http://localhost:8000/workflows/backtests/ma-cross
 http://localhost:8000/workflows/paper/accounts
@@ -99,6 +104,7 @@ http://localhost:8000/jobs/paper/runs/{run_id}/tick
 http://localhost:8000/jobs/market-data/sync
 http://localhost:8000/jobs/agents/market-analysis
 http://localhost:8000/jobs/agents/strategy-idea
+http://localhost:8000/jobs/agents/backtest-review
 http://localhost:8000/job-schedules
 http://localhost:8000/job-schedules/run-due
 http://localhost:8000/job-schedules/{schedule_id}
@@ -390,6 +396,55 @@ Agent outputs are research-only. They do not place orders, call broker adapters,
 execute generated code, start paper runs, submit backtests automatically, or provide buy/sell
 instructions. Strategy-code generation and automatic trading are intentionally outside this
 milestone. Candidate payloads always require human approval.
+
+### Quant Agent v3: approval and backtest review loop
+
+V3 adds an operator-gated research loop:
+
+```text
+strategy_idea agent run -> operator approve/reject -> backtest_ma_cross job -> refresh/link backtest result -> backtest_review agent job -> research-only readiness recommendation
+```
+
+Approval submits the exact stored candidate payload to the deterministic research backtest. It does
+not approve paper trading, create paper runs, call broker adapters or exchanges, place orders,
+permit generated strategy code, or provide live-trading advice.
+
+Approve a candidate:
+
+```bash
+curl -g -X POST "http://127.0.0.1:8000/agent-candidates/{agent_run_id}/approve" \
+  -H "Content-Type: application/json" \
+  -d '{"operator":"researcher","note":"Research backtest approved."}'
+```
+
+Reject a candidate:
+
+```bash
+curl -g -X POST "http://127.0.0.1:8000/agent-candidates/{agent_run_id}/reject" \
+  -H "Content-Type: application/json" \
+  -d '{"operator":"researcher","note":"Insufficient validation detail."}'
+```
+
+Inspect candidate reviews:
+
+```bash
+curl http://127.0.0.1:8000/agent-candidates
+curl -g "http://127.0.0.1:8000/agent-candidates/{candidate_review_id}"
+```
+
+Refresh and link the deterministic backtest result:
+
+```bash
+curl -g -X POST "http://127.0.0.1:8000/agent-candidates/{candidate_review_id}/refresh-backtest"
+```
+
+Create a backtest review agent job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/agents/backtest-review \
+  -H "Content-Type: application/json" \
+  -d '{"candidate_review_id":1}'
+```
 
 ## Job Tasks
 

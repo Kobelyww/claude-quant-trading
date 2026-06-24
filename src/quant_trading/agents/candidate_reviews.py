@@ -263,7 +263,7 @@ def refresh_candidate_backtest_status(
         job = job_repo.get(review.backtest_job_run_id)
         if job is None:
             raise CandidateReviewNotFoundError("linked backtest job not found")
-        if job.status not in {"succeeded", "failed"}:
+        if job.status not in {"succeeded", "failed", "cancelled"}:
             raise CandidateReviewConflictError("linked backtest job has not completed")
 
         now = _now()

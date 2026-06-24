@@ -425,6 +425,38 @@ def test_refresh_failed_job_marks_review_failed_with_capped_error():
     assert refreshed.error_message == "x" * 1000
 
 
+def test_refresh_cancelled_job_marks_review_failed():
+    class FakeRqJob:
+        id = "queued-job"
+
+    class CapturingQueue:
+        def enqueue(self, func, *args):
+            return FakeRqJob()
+
+    engine = _create_engine()
+    source_id = _create_source_agent_run(engine)
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved for async backtest",
+        settings=_rq_settings(),
+        queue_factory=lambda redis_url: CapturingQueue(),
+    )
+    with session_scope(engine) as session:
+        job = session.get(JobRunORM, review.backtest_job_run_id)
+        assert job is not None
+        job.status = "cancelled"
+        job.error_message = "cancelled"
+        job.finished_at = datetime(2026, 6, 24, 9, 1, 1)
+
+    refreshed = refresh_candidate_backtest_status(engine, review.id)
+
+    assert refreshed.status == "backtest_failed"
+    assert refreshed.backtest_run_id is None
+    assert refreshed.error_message == "cancelled"
+
+
 def test_duplicate_approval_conflicts_and_submits_no_second_job(legacy_sqlite_db):
     engine = _create_engine()
     import_legacy_sqlite(legacy_sqlite_db, engine)

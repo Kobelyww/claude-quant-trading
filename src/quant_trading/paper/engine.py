@@ -21,7 +21,7 @@ from quant_trading.portfolio.accounting import apply_fill
 from quant_trading.paper.repositories import PaperStateRepository
 from quant_trading.risk.engine import RiskEngine
 from quant_trading.storage.db import session_scope
-from quant_trading.storage.repositories import MarketDataRepository
+from quant_trading.storage.repositories import BrokerOrderEventRepository, MarketDataRepository
 from quant_trading.strategy.base import Strategy
 
 
@@ -156,6 +156,13 @@ class PaperTradingEngine:
                     client_order_id=f"paper-{run.id}-{order.id}",
                 )
                 broker_result = self.broker.submit_order(request, latest)
+                BrokerOrderEventRepository(session).record_from_broker_result(
+                    run_id=run.id,
+                    order_id=order.id,
+                    request=request,
+                    result=broker_result,
+                    created_at=latest.timestamp,
+                )
                 if broker_result.fill is None:
                     repository.mark_order_skipped(order, decision.decision.value)
                     continue

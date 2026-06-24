@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+import json
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from quant_trading.storage.models import (
     PortfolioSnapshotORM,
     RiskDecisionORM,
 )
+from quant_trading.storage.repositories import BrokerOrderEventRepository
 
 
 @dataclass
@@ -230,6 +232,7 @@ def test_paper_tick_persists_approved_buy_and_is_idempotent(legacy_sqlite_db: Pa
             select(PortfolioSnapshotORM).where(PortfolioSnapshotORM.account_id == account_id)
         )
         risk_decision = session.scalar(select(RiskDecisionORM).where(RiskDecisionORM.run_id == run_id))
+        broker_events = BrokerOrderEventRepository(session).list_for_run(run_id)
 
     assert first.run_id == run_id
     assert first.account_id == account_id
@@ -256,6 +259,11 @@ def test_paper_tick_persists_approved_buy_and_is_idempotent(legacy_sqlite_db: Pa
     assert snapshot.market_value > Decimal("0")
     assert risk_decision.order_id == order.id
     assert risk_decision.decision == "approved"
+    assert len(broker_events) == 1
+    assert broker_events[0].broker_mode == "simulated"
+    assert broker_events[0].status == "filled"
+    assert broker_events[0].accepted is True
+    assert json.loads(broker_events[0].result_payload)["has_fill"] is True
 
     counts_after_first = persisted_counts(engine, account_id, run_id)
     second = paper.run_one_tick(
@@ -573,6 +581,7 @@ def test_paper_tick_with_dry_run_broker_records_order_without_fill_or_position(
             .select_from(PaperPositionORM)
             .where(PaperPositionORM.account_id == account_id)
         )
+        broker_events = BrokerOrderEventRepository(session).list_for_run(run_id)
 
     assert summary.orders_created == 1
     assert summary.orders_filled == 0
@@ -582,3 +591,8 @@ def test_paper_tick_with_dry_run_broker_records_order_without_fill_or_position(
     assert fill_count == 0
     assert position_count == 0
     assert len(dry_run_broker.submitted_requests) == 1
+    assert len(broker_events) == 1
+    assert broker_events[0].broker_mode == "dry_run"
+    assert broker_events[0].status == "submitted"
+    assert broker_events[0].accepted is True
+    assert json.loads(broker_events[0].result_payload)["has_fill"] is False

@@ -372,3 +372,26 @@ class DataSyncRunORM(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentRunORM(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_type: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    model_name: Mapped[str] = mapped_column(String(128), default="")
+    request_payload: Mapped[str] = mapped_column(Text, default="{}")
+    metrics_payload: Mapped[str] = mapped_column(Text, default="{}")
+    result_payload: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -87,3 +87,47 @@ def test_settings_accepts_dry_run_broker_mode_and_rejects_unknown():
         AppSettings(broker_mode="live")
 
     assert "QUANT_BROKER_MODE must be simulated or dry_run" in str(exc_info.value)
+
+
+def test_settings_default_agent_configuration(monkeypatch):
+    for key in (
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_API_BASE",
+        "DEEPSEEK_MODEL",
+        "QUANT_AGENT_PROMPT_MAX_CHARS",
+        "QUANT_AGENT_RESULT_MAX_CHARS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    settings = AppSettings()
+
+    assert settings.deepseek_api_key is None
+    assert settings.deepseek_api_base == "https://api.deepseek.com"
+    assert settings.deepseek_model == "deepseek-v4-pro"
+    assert settings.agent_prompt_max_chars == 8000
+    assert settings.agent_result_max_chars == 12000
+
+
+def test_settings_accept_agent_configuration():
+    settings = AppSettings(
+        deepseek_api_key=" secret ",
+        deepseek_api_base=" https://example.invalid ",
+        deepseek_model=" custom-model ",
+        agent_prompt_max_chars=4096,
+        agent_result_max_chars=9000,
+    )
+
+    assert settings.deepseek_api_key == "secret"
+    assert settings.deepseek_api_base == "https://example.invalid"
+    assert settings.deepseek_model == "custom-model"
+    assert settings.agent_prompt_max_chars == 4096
+    assert settings.agent_result_max_chars == 9000
+
+
+def test_settings_redacts_deepseek_api_key():
+    settings = AppSettings(deepseek_api_key="deep-secret")
+
+    rendered = repr(settings)
+
+    assert "deep-secret" not in rendered
+    assert "deepseek_api_key" not in rendered

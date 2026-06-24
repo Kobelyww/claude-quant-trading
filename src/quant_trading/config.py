@@ -33,6 +33,24 @@ class AppSettings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
     trading_enabled: bool = Field(default=False, validation_alias="QUANT_TRADING_ENABLED")
     broker_mode: str = Field(default="simulated", validation_alias="QUANT_BROKER_MODE")
+    deepseek_api_key: str | None = Field(
+        default=None,
+        validation_alias="DEEPSEEK_API_KEY",
+        repr=False,
+    )
+    deepseek_api_base: str = Field(
+        default="https://api.deepseek.com",
+        validation_alias="DEEPSEEK_API_BASE",
+    )
+    deepseek_model: str = Field(default="deepseek-v4-pro", validation_alias="DEEPSEEK_MODEL")
+    agent_prompt_max_chars: int = Field(
+        default=8000,
+        validation_alias="QUANT_AGENT_PROMPT_MAX_CHARS",
+    )
+    agent_result_max_chars: int = Field(
+        default=12000,
+        validation_alias="QUANT_AGENT_RESULT_MAX_CHARS",
+    )
 
     @field_validator("public_routes", mode="before")
     @classmethod
@@ -72,6 +90,14 @@ class AppSettings(BaseSettings):
         self.auth_header = self.auth_header.strip() or "Authorization"
         self.redis_url = self.redis_url.strip() or "redis://localhost:6379/0"
         self.broker_mode = self.broker_mode.strip() or "simulated"
+        if self.deepseek_api_key is not None:
+            self.deepseek_api_key = self.deepseek_api_key.strip() or None
+        self.deepseek_api_base = self.deepseek_api_base.strip() or "https://api.deepseek.com"
+        self.deepseek_model = self.deepseek_model.strip() or "deepseek-v4-pro"
+        if self.agent_prompt_max_chars <= 0:
+            raise ValueError("QUANT_AGENT_PROMPT_MAX_CHARS must be positive")
+        if self.agent_result_max_chars <= 0:
+            raise ValueError("QUANT_AGENT_RESULT_MAX_CHARS must be positive")
         self.public_routes = [
             route if route.startswith("/") else f"/{route}" for route in self.public_routes
         ]

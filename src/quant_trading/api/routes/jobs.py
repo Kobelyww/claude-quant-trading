@@ -14,6 +14,8 @@ from quant_trading.jobs.queue import make_queue
 from quant_trading.jobs.runtime import (
     BACKTEST_MA_CROSS,
     IMPORT_LEGACY,
+    JOB_AGENT_MARKET_ANALYSIS,
+    JOB_AGENT_STRATEGY_IDEA,
     MARKET_DATA_SYNC,
     PAPER_RUN_TICK,
 )
@@ -31,6 +33,21 @@ class MarketDataSyncRequest(BaseModel):
     symbol: str = Field(min_length=1)
     start: str | None = None
     end: str | None = None
+
+
+class AgentMarketAnalysisRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=32)
+    start: str | None = None
+    end: str | None = None
+    lookback_bars: int = Field(default=252, ge=60, le=1000)
+    mode: str = Field(default="overview", pattern="^(overview|risk|regime)$")
+
+
+class AgentStrategyIdeaRequest(BaseModel):
+    idea: str = Field(min_length=1, max_length=4000)
+    symbol: str | None = Field(default=None, max_length=32)
+    market_context: str | None = Field(default=None, max_length=2000)
+    constraints: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/import-legacy")
@@ -80,6 +97,38 @@ def create_market_data_sync_job(payload: MarketDataSyncRequest, request: Request
             request.app.state.settings,
             MARKET_DATA_SYNC,
             payload.model_dump(mode="json"),
+            make_queue,
+        )
+    )
+
+
+@router.post("/agents/market-analysis")
+def create_agent_market_analysis_job(
+    payload: AgentMarketAnalysisRequest,
+    request: Request,
+) -> dict[str, Any]:
+    return _job_payload(
+        submit_job_run(
+            request.app.state.engine,
+            request.app.state.settings,
+            JOB_AGENT_MARKET_ANALYSIS,
+            _agent_job_payload(payload.model_dump(mode="json"), request.app.state.settings),
+            make_queue,
+        )
+    )
+
+
+@router.post("/agents/strategy-idea")
+def create_agent_strategy_idea_job(
+    payload: AgentStrategyIdeaRequest,
+    request: Request,
+) -> dict[str, Any]:
+    return _job_payload(
+        submit_job_run(
+            request.app.state.engine,
+            request.app.state.settings,
+            JOB_AGENT_STRATEGY_IDEA,
+            _agent_job_payload(payload.model_dump(mode="json"), request.app.state.settings),
             make_queue,
         )
     )
@@ -197,6 +246,16 @@ def _json_loads(value: str | None) -> dict[str, Any]:
         return {}
     loaded = json.loads(value)
     return loaded if isinstance(loaded, dict) else {"value": loaded}
+
+
+def _agent_job_payload(payload: dict[str, Any], settings) -> dict[str, Any]:
+    return {
+        **payload,
+        "deepseek_api_base": settings.deepseek_api_base,
+        "deepseek_model": settings.deepseek_model,
+        "agent_prompt_max_chars": settings.agent_prompt_max_chars,
+        "agent_result_max_chars": settings.agent_result_max_chars,
+    }
 
 
 def _iso(value: date | datetime | None) -> str | None:

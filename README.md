@@ -80,6 +80,8 @@ http://localhost:8000/backtests
 http://localhost:8000/paper/accounts
 http://localhost:8000/paper/runs
 http://localhost:8000/paper/snapshots
+http://localhost:8000/agent-runs
+http://localhost:8000/agent-runs/{agent_run_id}
 http://localhost:8000/workflows/import-legacy
 http://localhost:8000/workflows/backtests/ma-cross
 http://localhost:8000/workflows/paper/accounts
@@ -95,6 +97,8 @@ http://localhost:8000/jobs/import-legacy
 http://localhost:8000/jobs/backtests/ma-cross
 http://localhost:8000/jobs/paper/runs/{run_id}/tick
 http://localhost:8000/jobs/market-data/sync
+http://localhost:8000/jobs/agents/market-analysis
+http://localhost:8000/jobs/agents/strategy-idea
 http://localhost:8000/job-schedules
 http://localhost:8000/job-schedules/run-due
 http://localhost:8000/job-schedules/{schedule_id}
@@ -332,6 +336,48 @@ The sync path stores normalized daily bars idempotently and records provider, sy
 status, imported bar count, linked job id, and capped error text. Tests use fake providers;
 real local AkShare sync requires installing the optional `.[data]` dependencies. This still does
 not place broker or exchange orders.
+
+## Quant Agent v1
+
+Quant Agent v1 adds audited research agents for market analysis and strategy idea structuring.
+Agents run through the existing job runtime and store business-level audit rows in `agent_runs`.
+
+Create a market analysis job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/agents/market-analysis \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"000001","lookback_bars":252,"mode":"overview"}'
+```
+
+Create a strategy idea job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/agents/strategy-idea \
+  -H "Content-Type: application/json" \
+  -d '{"idea":"Use moving-average pullbacks to structure a long-only trend research strategy.","symbol":"000001"}'
+```
+
+Inspect agent runs:
+
+```bash
+curl http://127.0.0.1:8000/agent-runs
+curl http://127.0.0.1:8000/agent-runs/1
+```
+
+Agent jobs require:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | empty | Required for real LLM-backed agent jobs. |
+| `DEEPSEEK_API_BASE` | `https://api.deepseek.com` | DeepSeek-compatible API base URL. |
+| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | Model name used by the agent LLM client. |
+| `QUANT_AGENT_PROMPT_MAX_CHARS` | `8000` | Maximum prompt characters sent by agent services. |
+| `QUANT_AGENT_RESULT_MAX_CHARS` | `12000` | Maximum LLM result characters persisted by agent services. |
+
+Agent outputs are research-only. They do not place orders, call broker adapters, approve strategies,
+execute generated code, start paper runs, or provide buy/sell instructions. Strategy-code generation
+and automatic trading are intentionally outside v1.
 
 ## Job Tasks
 

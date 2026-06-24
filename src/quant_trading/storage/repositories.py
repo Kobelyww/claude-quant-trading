@@ -887,12 +887,16 @@ class AgentCandidateReviewRepository:
         self,
         row: AgentCandidateReviewORM,
         *,
+        candidate_payload: str,
+        backtest_request_payload: str,
         operator: str,
         operator_note: str,
         decided_at: datetime,
         updated_at: datetime,
     ) -> AgentCandidateReviewORM:
         row.status = "rejected"
+        row.candidate_payload = candidate_payload
+        row.backtest_request_payload = backtest_request_payload
         row.operator = operator
         row.operator_note = operator_note
         row.decided_at = decided_at

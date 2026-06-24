@@ -4,7 +4,12 @@ from datetime import datetime
 from sqlalchemy import select
 
 from quant_trading.storage.db import create_all, make_engine, session_scope
-from quant_trading.storage.models import AgentCandidateReviewORM, AgentRunORM
+from quant_trading.storage.models import (
+    AgentCandidateReviewORM,
+    AgentRunORM,
+    BacktestRunORM,
+    JobRunORM,
+)
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
     AgentRunRepository,
@@ -64,6 +69,39 @@ def test_candidate_review_repository_lifecycle():
 
     with session_scope(engine) as session:
         source = _create_source_agent_run(session)
+        backtest_job = JobRunORM(
+            job_type="backtest_ma_cross",
+            status="queued",
+            progress=0,
+            request_payload="{}",
+            result_payload="{}",
+            queued_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        backtest_run = BacktestRunORM(
+            strategy_name="ma_cross",
+            symbol="000001",
+            initial_cash=100000,
+            final_equity=101000,
+            status="succeeded",
+            created_at=now,
+        )
+        review_agent = AgentRunORM(
+            agent_type="backtest_review",
+            status="succeeded",
+            symbol="000001",
+            model_name="fake-llm",
+            request_payload="{}",
+            metrics_payload="{}",
+            result_payload="{}",
+            started_at=now,
+            finished_at=now,
+            duration_ms=1,
+            created_at=now,
+        )
+        session.add_all([backtest_job, backtest_run, review_agent])
+        session.flush()
         repo = AgentCandidateReviewRepository(session)
         review = repo.create_decision(
             source_agent_run_id=source.id,
@@ -81,10 +119,29 @@ def test_candidate_review_repository_lifecycle():
             created_at=now,
         )
         review_id = review.id
-        repo.mark_backtest_submitted(review, backtest_job_run_id=7, updated_at=now)
-        repo.mark_backtest_succeeded(review, backtest_run_id=11, updated_at=now)
-        repo.mark_review_requested(review, review_agent_run_id=13, updated_at=now)
-        repo.mark_review_succeeded(review, review_agent_run_id=13, updated_at=now)
+        repo.mark_backtest_submitted(
+            review,
+            backtest_job_run_id=backtest_job.id,
+            updated_at=now,
+        )
+        repo.mark_backtest_succeeded(
+            review,
+            backtest_run_id=backtest_run.id,
+            updated_at=now,
+        )
+        repo.mark_review_requested(
+            review,
+            review_agent_run_id=review_agent.id,
+            updated_at=now,
+        )
+        repo.mark_review_succeeded(
+            review,
+            review_agent_run_id=review_agent.id,
+            updated_at=now,
+        )
+        backtest_job_id = backtest_job.id
+        backtest_run_id = backtest_run.id
+        review_agent_id = review_agent.id
 
     with session_scope(engine) as session:
         review = AgentCandidateReviewRepository(session).get(review_id)
@@ -95,12 +152,53 @@ def test_candidate_review_repository_lifecycle():
         assert review.strategy_name == "ma_cross"
         assert review.operator == "local"
         assert review.operator_note == "approved for research backtest"
-        assert review.backtest_job_run_id == 7
-        assert review.backtest_run_id == 11
-        assert review.review_agent_run_id == 13
+        assert review.backtest_job_run_id == backtest_job_id
+        assert review.backtest_run_id == backtest_run_id
+        assert review.review_agent_run_id == review_agent_id
         assert review.error_message is None
         assert AgentCandidateReviewRepository(session).get_by_source_agent_run_id(1).id == review_id
         assert [row.id for row in AgentCandidateReviewRepository(session).list_recent()] == [review_id]
+
+
+def test_candidate_review_update_rejection_refreshes_payloads():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    now = datetime(2026, 6, 24, 9, 0, 0)
+
+    with session_scope(engine) as session:
+        source = _create_source_agent_run(session)
+        repo = AgentCandidateReviewRepository(session)
+        review = repo.create_decision(
+            source_agent_run_id=source.id,
+            status="pending",
+            symbol="000001",
+            strategy_name="ma_cross",
+            candidate_payload='{"old": true}',
+            backtest_request_payload='{"old_backtest": true}',
+            operator="",
+            operator_note="",
+            decided_at=None,
+            created_at=now,
+        )
+        review_id = review.id
+        repo.update_rejection(
+            review,
+            candidate_payload='{"new": true}',
+            backtest_request_payload='{"new_backtest": true}',
+            operator="local",
+            operator_note="reject after edits",
+            decided_at=now,
+            updated_at=now,
+        )
+
+    with session_scope(engine) as session:
+        review = AgentCandidateReviewRepository(session).get(review_id)
+        assert review is not None
+        assert review.status == "rejected"
+        assert review.candidate_payload == '{"new": true}'
+        assert review.backtest_request_payload == '{"new_backtest": true}'
+        assert review.operator == "local"
+        assert review.operator_note == "reject after edits"
 
 
 def test_candidate_review_source_agent_run_is_unique():

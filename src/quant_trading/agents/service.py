@@ -8,6 +8,7 @@ import time
 
 from sqlalchemy import Engine
 
+from quant_trading.agents.candidates import validate_strategy_candidate
 from quant_trading.agents.llm import DeepSeekLLMClient, LLMClient
 from quant_trading.agents.market_analysis import build_market_analysis_prompt, compute_market_metrics
 from quant_trading.agents.models import (
@@ -153,6 +154,19 @@ def run_strategy_idea_agent(
         parsed_payload = parse_strategy_idea_response(
             response.content[: settings.agent_result_max_chars]
         )
+        if parsed_payload["parsed"]:
+            validation_payload = validate_strategy_candidate(
+                parsed_payload["spec"], request_symbol=clean_request.symbol
+            )
+        else:
+            validation_payload = {
+                "validation_status": "needs_review",
+                "validation_errors": [],
+                "safety_flags": [],
+                "candidate_payload": None,
+                "backtest_request_payload": None,
+                "requires_human_approval": True,
+            }
         result_payload = {
             "agent_run_id": agent_run_id,
             "agent_type": AGENT_STRATEGY_IDEA,
@@ -160,6 +174,7 @@ def run_strategy_idea_agent(
             "research_only": True,
             "disclaimer": RESEARCH_DISCLAIMER,
             **parsed_payload,
+            **validation_payload,
         }
         finished_at = _utcnow()
         with session_scope(engine) as session:

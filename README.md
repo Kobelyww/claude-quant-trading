@@ -405,9 +405,10 @@ V3 adds an operator-gated research loop:
 strategy_idea agent run -> operator approve/reject -> backtest_ma_cross job -> refresh/link backtest result -> backtest_review agent job -> research-only readiness recommendation
 ```
 
-Approval submits the exact stored candidate payload to the deterministic research backtest. It does
-not approve paper trading, create paper runs, call broker adapters or exchanges, place orders,
-permit generated strategy code, or provide live-trading advice.
+Approval submits the exact stored `backtest_request_payload["payload"]` from the validated
+candidate result to the deterministic research backtest. It does not approve paper trading, create
+paper runs, call broker adapters or exchanges, place orders, permit generated strategy code, or
+provide live-trading advice.
 
 Approve a candidate:
 
@@ -432,7 +433,9 @@ curl http://127.0.0.1:8000/agent-candidates
 curl -g "http://127.0.0.1:8000/agent-candidates/{candidate_review_id}"
 ```
 
-Refresh and link the deterministic backtest result:
+Refresh and link the deterministic backtest result after the linked job completes. If the linked
+job is still queued or running, the API returns a conflict and the candidate review stays
+`backtest_submitted`.
 
 ```bash
 curl -g -X POST "http://127.0.0.1:8000/agent-candidates/{candidate_review_id}/refresh-backtest"
@@ -445,6 +448,9 @@ curl -X POST http://127.0.0.1:8000/jobs/agents/backtest-review \
   -H "Content-Type: application/json" \
   -d '{"candidate_review_id":1}'
 ```
+
+The request also accepts `backtest_run_id` when the caller wants to be explicit, but it must match
+the candidate review's linked backtest run.
 
 ## Job Tasks
 

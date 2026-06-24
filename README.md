@@ -377,6 +377,8 @@ Available adapters:
 - `SimulatedBrokerAdapter` wraps the existing simulated broker and creates deterministic simulated fills for backtests and paper trading.
 - `DryRunBrokerAdapter` records would-submit order requests and returns accepted dry-run results without fills or external calls.
 
+Broker submissions from paper trading are persisted to `broker_order_events`. Each row stores normalized request/result metadata such as client order id, broker order id, mode, status, accepted flag, and a capped message. The audit payload intentionally excludes credentials, API tokens, and raw unbounded broker responses.
+
 The adapter boundary is preparation for real market integration, not a broker integration itself. Real broker adapters require separate credentials handling, account synchronization, live order status reconciliation, kill-switch tests, and explicit operator approval.
 
 ## Legacy Data

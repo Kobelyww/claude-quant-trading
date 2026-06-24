@@ -192,6 +192,25 @@ def test_broker_or_order_instruction_sets_safety_flag_and_blocks_candidate():
     assert result["candidate_payload"] is None
 
 
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "buy at market after the signal",
+        "sell at open if price weakens",
+        "execute buy order through the broker",
+    ],
+)
+def test_direct_buy_sell_and_broker_order_terms_set_safety_flag(instruction):
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(risk_controls=[instruction]),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "failed"
+    assert "contains_broker_or_order_instruction" in result["safety_flags"]
+    assert result["candidate_payload"] is None
+
+
 def test_profitability_claim_sets_safety_flag_and_blocks_candidate():
     result = validate_strategy_candidate(
         complete_ma_cross_spec(thesis="This is a guaranteed return strategy."),
@@ -203,6 +222,25 @@ def test_profitability_claim_sets_safety_flag_and_blocks_candidate():
     assert result["candidate_payload"] is None
 
 
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "guarantees returns",
+        "promise 20% annual return",
+        "100% win rate",
+    ],
+)
+def test_profitability_claim_variants_set_safety_flag(claim):
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(thesis=claim),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "failed"
+    assert "contains_profitability_claim" in result["safety_flags"]
+    assert result["candidate_payload"] is None
+
+
 def test_live_trading_recommendation_sets_safety_flag_and_blocks_candidate():
     result = validate_strategy_candidate(
         complete_ma_cross_spec(backtest_readiness="Ready for live trading immediately."),
@@ -211,6 +249,25 @@ def test_live_trading_recommendation_sets_safety_flag_and_blocks_candidate():
 
     assert result["validation_status"] == "failed"
     assert result["safety_flags"] == ["contains_live_trading_recommendation"]
+    assert result["candidate_payload"] is None
+
+
+@pytest.mark.parametrize(
+    "recommendation",
+    [
+        "must buy tomorrow",
+        "start trading this live",
+        "deploy to real account",
+    ],
+)
+def test_live_trading_recommendation_variants_set_safety_flag(recommendation):
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(backtest_readiness=recommendation),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "failed"
+    assert "contains_live_trading_recommendation" in result["safety_flags"]
     assert result["candidate_payload"] is None
 
 

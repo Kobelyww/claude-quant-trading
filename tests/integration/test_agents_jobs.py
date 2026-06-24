@@ -245,6 +245,38 @@ def test_run_backtest_review_agent_rejects_non_succeeded_candidate_without_tradi
         assert session.query(BrokerOrderEventORM).count() == 0
 
 
+def test_run_backtest_review_agent_rejects_mismatched_backtest_run_id():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id, linked_backtest_run_id = _seed_backtest_review_candidate(engine)
+    mismatched_backtest_run_id = _create_unlinked_backtest_run(engine)
+
+    try:
+        run_backtest_review_agent(
+            engine,
+            BacktestReviewRequest(
+                candidate_review_id=candidate_review_id,
+                backtest_run_id=mismatched_backtest_run_id,
+            ),
+            llm_client=FakeLLMClient(VALID_BACKTEST_REVIEW_RESPONSE),
+        )
+    except ValueError as exc:
+        assert "backtest_run_id does not match candidate review" in str(exc)
+    else:
+        raise AssertionError("expected mismatched backtest_run_id failure")
+
+    with session_scope(engine) as session:
+        review = AgentCandidateReviewRepository(session).get(candidate_review_id)
+        agent_run = session.scalar(
+            select(AgentRunORM).where(AgentRunORM.agent_type == "backtest_review")
+        )
+        assert review is not None
+        assert review.status == "backtest_succeeded"
+        assert review.backtest_run_id == linked_backtest_run_id
+        assert review.review_agent_run_id is None
+        assert agent_run is None
+
+
 def test_strategy_idea_agent_persists_failure_when_llm_credentials_missing():
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
@@ -558,3 +590,20 @@ def _seed_backtest_review_candidate(
         )
         review.backtest_run_id = run.id
         return review.id, run.id
+
+
+def _create_unlinked_backtest_run(engine) -> int:
+    from quant_trading.storage.models import BacktestRunORM
+
+    with session_scope(engine) as session:
+        run = BacktestRunORM(
+            strategy_name="ma_cross",
+            symbol="000002",
+            initial_cash=Decimal("100000.000000"),
+            final_equity=Decimal("50000.000000"),
+            status="done",
+            created_at=datetime(2026, 6, 24, 10, 0, 0),
+        )
+        session.add(run)
+        session.flush()
+        return run.id

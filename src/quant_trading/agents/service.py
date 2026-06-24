@@ -238,6 +238,7 @@ def run_backtest_review_agent(
     )
 
     try:
+        _validate_backtest_review_request_linkage(engine, request)
         context = load_backtest_review_context(
             engine,
             request.candidate_review_id,
@@ -331,6 +332,20 @@ def run_backtest_review_agent(
                         updated_at=finished_at,
                     )
         raise
+
+
+def _validate_backtest_review_request_linkage(
+    engine: Engine,
+    request: BacktestReviewRequest,
+) -> None:
+    if request.backtest_run_id is None:
+        return
+    with session_scope(engine) as session:
+        review = AgentCandidateReviewRepository(session).get(request.candidate_review_id)
+        if review is None:
+            raise ValueError("candidate review not found")
+        if review.backtest_run_id != request.backtest_run_id:
+            raise ValueError("backtest_run_id does not match candidate review")
 
 
 def _json_dumps(payload: dict[str, Any]) -> str:

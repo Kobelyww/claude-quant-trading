@@ -108,6 +108,10 @@ def test_run_strategy_idea_agent_persists_success():
         },
     }
     assert result["requires_human_approval"] is True
+    persisted_result = json.loads(row.result_payload)
+    assert persisted_result["validation_status"] == result["validation_status"]
+    assert persisted_result["candidate_payload"] == result["candidate_payload"]
+    assert persisted_result["backtest_request_payload"] == result["backtest_request_payload"]
 
 
 def test_run_strategy_idea_agent_marks_unparseable_text_needs_review():
@@ -128,6 +132,16 @@ def test_run_strategy_idea_agent_marks_unparseable_text_needs_review():
     assert result["candidate_payload"] is None
     assert result["backtest_request_payload"] is None
     assert result["requires_human_approval"] is True
+
+    with session_scope(engine) as session:
+        row = session.get(AgentRunORM, result["agent_run_id"])
+
+    assert row is not None
+    assert row.status == "succeeded"
+    persisted_result = json.loads(row.result_payload)
+    assert persisted_result["validation_status"] == "needs_review"
+    assert persisted_result["candidate_payload"] is None
+    assert persisted_result["backtest_request_payload"] is None
 
 
 def test_strategy_idea_agent_persists_failure_when_llm_credentials_missing():
@@ -215,6 +229,7 @@ def test_strategy_idea_candidate_job_does_not_create_trading_rows(monkeypatch):
     from quant_trading.storage.models import (
         BacktestRunORM,
         BrokerOrderEventORM,
+        JobRunORM,
         PaperRunORM,
     )
 
@@ -236,6 +251,12 @@ def test_strategy_idea_candidate_job_does_not_create_trading_rows(monkeypatch):
     payload = response.json()
     assert payload["result_payload"]["validation_status"] == "passed"
     with session_scope(engine) as session:
+        backtest_job_count = (
+            session.query(JobRunORM)
+            .where(JobRunORM.job_type == "backtest_ma_cross")
+            .count()
+        )
+        assert backtest_job_count == 0
         assert session.query(BacktestRunORM).count() == 0
         assert session.query(PaperRunORM).count() == 0
         assert session.query(BrokerOrderEventORM).count() == 0

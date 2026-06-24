@@ -248,6 +248,29 @@ class RiskDecisionORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class BrokerOrderEventORM(Base):
+    __tablename__ = "broker_order_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_runs.id"), nullable=True, index=True
+    )
+    order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_orders.id"), nullable=True, index=True
+    )
+    broker_mode: Mapped[str] = mapped_column(String(32), index=True)
+    client_order_id: Mapped[str] = mapped_column(String(128), index=True)
+    broker_order_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    accepted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    request_payload: Mapped[str] = mapped_column(Text, default="{}")
+    result_payload: Mapped[str] = mapped_column(Text, default="{}")
+    message: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class WorkflowRunORM(Base):
     __tablename__ = "workflow_runs"
 

@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 
 from quant_trading.core.enums import Market
 from quant_trading.core.models import Bar
+from quant_trading.execution.broker import BrokerOrderRequest, BrokerOrderResult
 from quant_trading.storage.models import (
+    BrokerOrderEventORM,
     DataSyncRunORM,
     InstrumentORM,
     JobEventORM,
@@ -16,6 +18,57 @@ from quant_trading.storage.models import (
     MarketBarORM,
     WorkflowRunORM,
 )
+
+
+def _json_default(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if hasattr(value, "value"):
+        return value.value
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def _json_dumps(value: dict) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=_json_default)
+
+
+def _broker_request_payload(request: BrokerOrderRequest) -> dict:
+    return {
+        "client_order_id": request.client_order_id,
+        "instrument_id": request.instrument_id,
+        "symbol": request.symbol,
+        "side": request.side.value,
+        "order_type": request.order_type.value,
+        "quantity": request.quantity,
+        "limit_price": request.limit_price,
+        "submitted_at": request.submitted_at,
+        "reason": request.reason,
+    }
+
+
+def _broker_result_payload(result: BrokerOrderResult) -> dict:
+    payload = {
+        "broker_order_id": result.broker_order_id,
+        "status": result.status.value,
+        "mode": result.mode.value,
+        "accepted": result.accepted,
+        "message": result.message[:512],
+        "has_fill": result.fill is not None,
+    }
+    if result.fill is not None:
+        payload["fill"] = {
+            "instrument_id": result.fill.instrument_id,
+            "symbol": result.fill.symbol,
+            "side": result.fill.side.value,
+            "quantity": result.fill.quantity,
+            "price": result.fill.price,
+            "commission": result.fill.commission,
+            "slippage": result.fill.slippage,
+            "filled_at": result.fill.filled_at,
+        }
+    return payload
 
 
 class InstrumentRepository:
@@ -205,6 +258,58 @@ class WorkflowRunRepository:
 
     def get(self, workflow_run_id: int) -> WorkflowRunORM | None:
         return self.session.get(WorkflowRunORM, workflow_run_id)
+
+
+class BrokerOrderEventRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record_from_broker_result(
+        self,
+        *,
+        run_id: int | None,
+        order_id: int | None,
+        request: BrokerOrderRequest,
+        result: BrokerOrderResult,
+        created_at: datetime | date,
+    ) -> BrokerOrderEventORM:
+        row = BrokerOrderEventORM(
+            run_id=run_id,
+            order_id=order_id,
+            broker_mode=result.mode.value,
+            client_order_id=request.client_order_id,
+            broker_order_id=result.broker_order_id,
+            status=result.status.value,
+            accepted=result.accepted,
+            request_payload=_json_dumps(_broker_request_payload(request)),
+            result_payload=_json_dumps(_broker_result_payload(result)),
+            message=result.message[:512],
+            created_at=created_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_for_order(self, order_id: int) -> list[BrokerOrderEventORM]:
+        return list(
+            self.session.scalars(
+                select(BrokerOrderEventORM)
+                .where(BrokerOrderEventORM.order_id == order_id)
+                .order_by(BrokerOrderEventORM.id)
+            ).all()
+        )
+
+    def list_for_run(self, run_id: int) -> list[BrokerOrderEventORM]:
+        return list(
+            self.session.scalars(
+                select(BrokerOrderEventORM)
+                .where(BrokerOrderEventORM.run_id == run_id)
+                .order_by(BrokerOrderEventORM.id)
+            ).all()
+        )
+
+    def get(self, event_id: int) -> BrokerOrderEventORM | None:
+        return self.session.get(BrokerOrderEventORM, event_id)
 
 
 class JobRunRepository:

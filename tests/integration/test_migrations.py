@@ -27,6 +27,7 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
     assert "backtest_runs" in tables
     assert "paper_accounts" in tables
     assert "paper_runs" in tables
+    assert "broker_order_events" in tables
 
     schedule_columns = {column["name"] for column in inspector.get_columns("job_schedules")}
     assert {"locked_until", "locked_by", "lock_acquired_at"} <= schedule_columns

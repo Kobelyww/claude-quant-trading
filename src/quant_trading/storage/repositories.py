@@ -9,6 +9,7 @@ from quant_trading.core.enums import Market
 from quant_trading.core.models import Bar
 from quant_trading.execution.broker import BrokerOrderRequest, BrokerOrderResult
 from quant_trading.storage.models import (
+    AgentRunORM,
     BrokerOrderEventORM,
     DataSyncRunORM,
     InstrumentORM,
@@ -718,3 +719,88 @@ class DataSyncRunRepository:
 
     def get(self, sync_run_id: int) -> DataSyncRunORM | None:
         return self.session.get(DataSyncRunORM, sync_run_id)
+
+
+class AgentRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_running(
+        self,
+        *,
+        agent_type: str,
+        symbol: str | None,
+        model_name: str,
+        request_payload: str,
+        job_run_id: int | None,
+        started_at: datetime,
+    ) -> AgentRunORM:
+        row = AgentRunORM(
+            agent_type=agent_type,
+            status="running",
+            symbol=symbol,
+            model_name=model_name,
+            request_payload=request_payload,
+            metrics_payload="{}",
+            result_payload="{}",
+            error_message=None,
+            job_run_id=job_run_id,
+            started_at=started_at,
+            created_at=started_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def mark_succeeded(
+        self,
+        row: AgentRunORM,
+        *,
+        metrics_payload: str,
+        result_payload: str,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> AgentRunORM:
+        row.status = "succeeded"
+        row.metrics_payload = metrics_payload
+        row.result_payload = result_payload
+        row.error_message = None
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def mark_failed(
+        self,
+        row: AgentRunORM,
+        error_message: str,
+        *,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> AgentRunORM:
+        row.status = "failed"
+        row.error_message = error_message[:1000]
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        agent_type: str | None = None,
+        status: str | None = None,
+        symbol: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunORM]:
+        statement = select(AgentRunORM).order_by(AgentRunORM.id.desc()).limit(limit)
+        if agent_type:
+            statement = statement.where(AgentRunORM.agent_type == agent_type)
+        if status:
+            statement = statement.where(AgentRunORM.status == status)
+        if symbol:
+            statement = statement.where(AgentRunORM.symbol == symbol)
+        return list(self.session.scalars(statement).all())
+
+    def get(self, agent_run_id: int) -> AgentRunORM | None:
+        return self.session.get(AgentRunORM, agent_run_id)

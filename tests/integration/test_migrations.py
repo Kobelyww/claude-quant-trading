@@ -28,6 +28,25 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
     assert "paper_accounts" in tables
     assert "paper_runs" in tables
     assert "broker_order_events" in tables
+    assert "agent_runs" in tables
 
     schedule_columns = {column["name"] for column in inspector.get_columns("job_schedules")}
     assert {"locked_until", "locked_by", "lock_acquired_at"} <= schedule_columns
+
+    agent_run_columns = {column["name"] for column in inspector.get_columns("agent_runs")}
+    assert {
+        "id",
+        "agent_type",
+        "status",
+        "symbol",
+        "model_name",
+        "request_payload",
+        "metrics_payload",
+        "result_payload",
+        "error_message",
+        "job_run_id",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "created_at",
+    } <= agent_run_columns

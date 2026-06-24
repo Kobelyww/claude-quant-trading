@@ -10,6 +10,7 @@ from quant_trading.agents.candidate_reviews import (
     CandidateReviewConflictError,
     CandidateReviewValidationError,
     approve_strategy_candidate,
+    refresh_candidate_backtest_status,
     reject_strategy_candidate,
 )
 from quant_trading.config import AppSettings
@@ -284,6 +285,143 @@ def test_rq_queue_factory_failure_recovers_created_job_without_orphan():
             )
         ).all()
         assert orphaned_queued_jobs == []
+
+
+def test_refresh_queued_backtest_status_links_completed_job_run(legacy_sqlite_db):
+    class FakeRqJob:
+        id = "queued-job"
+
+    class CapturingQueue:
+        def enqueue(self, func, *args):
+            return FakeRqJob()
+
+    engine = _create_engine()
+    import_legacy_sqlite(legacy_sqlite_db, engine)
+    source_id = _create_source_agent_run(engine)
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved for async backtest",
+        settings=_rq_settings(),
+        queue_factory=lambda redis_url: CapturingQueue(),
+    )
+    assert review.status == "backtest_submitted"
+    assert review.backtest_job_run_id is not None
+
+    with session_scope(engine) as session:
+        session.add(
+            BacktestRunORM(
+                id=99,
+                symbol="000001",
+                strategy_name="ma_cross",
+                initial_cash=100000,
+                final_equity=100001,
+                status="succeeded",
+                created_at=datetime(2026, 6, 24, 9, 1, 0),
+            )
+        )
+        job = session.get(JobRunORM, review.backtest_job_run_id)
+        assert job is not None
+        job.status = "succeeded"
+        job.result_payload = json.dumps({"run_id": 99}, sort_keys=True)
+        job.finished_at = datetime(2026, 6, 24, 9, 1, 1)
+
+    refreshed = refresh_candidate_backtest_status(engine, review.id)
+
+    assert refreshed.status == "backtest_succeeded"
+    assert refreshed.backtest_run_id == 99
+    assert refreshed.error_message is None
+
+
+def test_refresh_queued_backtest_status_rejects_incomplete_job():
+    class FakeRqJob:
+        id = "queued-job"
+
+    class CapturingQueue:
+        def enqueue(self, func, *args):
+            return FakeRqJob()
+
+    engine = _create_engine()
+    source_id = _create_source_agent_run(engine)
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved for async backtest",
+        settings=_rq_settings(),
+        queue_factory=lambda redis_url: CapturingQueue(),
+    )
+
+    with pytest.raises(
+        CandidateReviewConflictError,
+        match="linked backtest job has not completed",
+    ):
+        refresh_candidate_backtest_status(engine, review.id)
+
+
+def test_refresh_succeeded_job_without_integer_run_id_marks_review_failed():
+    class FakeRqJob:
+        id = "queued-job"
+
+    class CapturingQueue:
+        def enqueue(self, func, *args):
+            return FakeRqJob()
+
+    engine = _create_engine()
+    source_id = _create_source_agent_run(engine)
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved for async backtest",
+        settings=_rq_settings(),
+        queue_factory=lambda redis_url: CapturingQueue(),
+    )
+    with session_scope(engine) as session:
+        job = session.get(JobRunORM, review.backtest_job_run_id)
+        assert job is not None
+        job.status = "succeeded"
+        job.result_payload = json.dumps({"run_id": "99"}, sort_keys=True)
+        job.finished_at = datetime(2026, 6, 24, 9, 1, 1)
+
+    refreshed = refresh_candidate_backtest_status(engine, review.id)
+
+    assert refreshed.status == "backtest_failed"
+    assert refreshed.backtest_run_id is None
+    assert refreshed.error_message == "completed backtest job did not return run_id"
+
+
+def test_refresh_failed_job_marks_review_failed_with_capped_error():
+    class FakeRqJob:
+        id = "queued-job"
+
+    class CapturingQueue:
+        def enqueue(self, func, *args):
+            return FakeRqJob()
+
+    engine = _create_engine()
+    source_id = _create_source_agent_run(engine)
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved for async backtest",
+        settings=_rq_settings(),
+        queue_factory=lambda redis_url: CapturingQueue(),
+    )
+    with session_scope(engine) as session:
+        job = session.get(JobRunORM, review.backtest_job_run_id)
+        assert job is not None
+        job.status = "failed"
+        job.error_message = "x" * 1200
+        job.finished_at = datetime(2026, 6, 24, 9, 1, 1)
+
+    refreshed = refresh_candidate_backtest_status(engine, review.id)
+
+    assert refreshed.status == "backtest_failed"
+    assert refreshed.backtest_run_id is None
+    assert refreshed.error_message == "x" * 1000
 
 
 def test_duplicate_approval_conflicts_and_submits_no_second_job(legacy_sqlite_db):

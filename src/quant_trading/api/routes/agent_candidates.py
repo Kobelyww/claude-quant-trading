@@ -11,6 +11,7 @@ from quant_trading.agents.candidate_reviews import (
     CandidateReviewValidationError,
     approve_strategy_candidate,
     candidate_review_payload,
+    refresh_candidate_backtest_status,
     reject_strategy_candidate,
 )
 from quant_trading.storage.db import session_scope
@@ -101,6 +102,21 @@ def reject_agent_candidate(
         CandidateReviewConflictError,
         CandidateReviewValidationError,
     ) as exc:
+        _raise_candidate_review_http_error(exc)
+    return candidate_review_payload(row)
+
+
+@router.post("/{candidate_review_id}/refresh-backtest")
+def refresh_agent_candidate_backtest(
+    candidate_review_id: int,
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        row = refresh_candidate_backtest_status(
+            request.app.state.engine,
+            candidate_review_id,
+        )
+    except (CandidateReviewNotFoundError, CandidateReviewConflictError) as exc:
         _raise_candidate_review_http_error(exc)
     return candidate_review_payload(row)
 

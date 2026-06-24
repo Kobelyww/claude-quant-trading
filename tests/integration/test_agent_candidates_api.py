@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from quant_trading.agents.candidates import BACKTEST_MA_CROSS
+from quant_trading.agents.candidate_reviews import approve_strategy_candidate
 from quant_trading.agents.models import AGENT_STRATEGY_IDEA
 from quant_trading.api.main import create_app
 from quant_trading.config import AppSettings
@@ -23,14 +24,18 @@ def _settings() -> AppSettings:
     return AppSettings(job_executor="inline")
 
 
+def _rq_settings() -> AppSettings:
+    return AppSettings(job_executor="rq", redis_url="redis://example.invalid:6379/0")
+
+
 def _create_engine():
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
     return engine
 
 
-def _client(engine) -> TestClient:
-    return TestClient(create_app(engine=engine, settings=_settings()))
+def _client(engine, settings: AppSettings | None = None) -> TestClient:
+    return TestClient(create_app(engine=engine, settings=settings or _settings()))
 
 
 def _candidate_result():
@@ -167,6 +172,37 @@ def test_reject_endpoint_creates_rejected_review_no_job_and_later_approval_confl
 
     assert approve_response.status_code == 409
     assert approve_response.json()["detail"] == "candidate already rejected"
+
+
+def test_refresh_backtest_endpoint_for_incomplete_queued_job_returns_conflict():
+    class FakeRqJob:
+        id = "queued-job"
+
+    class CapturingQueue:
+        def enqueue(self, func, *args):
+            return FakeRqJob()
+
+    engine = _create_engine()
+    source_id = _create_source_agent_run(engine)
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved for async backtest",
+        settings=_rq_settings(),
+        queue_factory=lambda redis_url: CapturingQueue(),
+    )
+    client = _client(engine, settings=_rq_settings())
+    assert review.status == "backtest_submitted"
+
+    refresh_response = client.post(
+        f"/agent-candidates/{review.id}/refresh-backtest",
+    )
+
+    assert refresh_response.status_code == 409
+    assert refresh_response.json() == {
+        "detail": "linked backtest job has not completed",
+    }
 
 
 def test_missing_and_malformed_candidate_decision_requests_return_expected_errors():

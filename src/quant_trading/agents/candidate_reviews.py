@@ -247,6 +247,53 @@ def reject_strategy_candidate(
         return review
 
 
+def refresh_candidate_backtest_status(
+    engine: Engine,
+    candidate_review_id: int,
+) -> AgentCandidateReviewORM:
+    with session_scope(engine) as session:
+        review_repo = AgentCandidateReviewRepository(session)
+        job_repo = JobRunRepository(session)
+        review = review_repo.get(candidate_review_id)
+        if review is None:
+            raise CandidateReviewNotFoundError("candidate review not found")
+        if review.backtest_job_run_id is None:
+            raise CandidateReviewConflictError("candidate has no linked backtest job")
+
+        job = job_repo.get(review.backtest_job_run_id)
+        if job is None:
+            raise CandidateReviewNotFoundError("linked backtest job not found")
+        if job.status not in {"succeeded", "failed"}:
+            raise CandidateReviewConflictError("linked backtest job has not completed")
+
+        now = _now()
+        if job.status == "succeeded":
+            result_payload = _json_loads(job.result_payload)
+            run_id = result_payload.get("run_id")
+            if isinstance(run_id, int):
+                review_repo.mark_backtest_succeeded(
+                    review,
+                    backtest_run_id=run_id,
+                    updated_at=now,
+                )
+            else:
+                review_repo.mark_backtest_failed(
+                    review,
+                    error_message="completed backtest job did not return run_id",
+                    updated_at=now,
+                )
+        else:
+            review_repo.mark_backtest_failed(
+                review,
+                error_message=(job.error_message or "backtest job failed")[
+                    :_MAX_ERROR_LENGTH
+                ],
+                updated_at=now,
+            )
+        session.expunge(review)
+        return review
+
+
 def _validate_source_agent_run(source) -> tuple[dict[str, Any], dict[str, Any]]:
     if source is None:
         raise CandidateReviewNotFoundError("source agent run not found")

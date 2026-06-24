@@ -192,15 +192,42 @@ def _has_ma_cross_evidence(parsed_payload: dict[str, Any]) -> bool:
         "exit_rules": parsed_payload.get("exit_rules"),
         "parameters_to_test": parsed_payload.get("parameters_to_test"),
     }
-    if _find_nested_value(
+    has_window_evidence = _find_nested_value(
         evidence_payload, "short_window"
-    ) is not None and _find_nested_value(evidence_payload, "long_window") is not None:
-        return True
+    ) is not None and _find_nested_value(evidence_payload, "long_window") is not None
 
     text = _flatten_text(evidence_payload).lower()
-    cross_terms = ("cross", "crossover", "golden cross", "death cross", "金叉", "死叉")
-    ma_terms = ("moving average", "均线", "ma", "sma", "ema")
-    return any(term in text for term in cross_terms) and any(term in text for term in ma_terms)
+    has_cross_evidence = _has_cross_evidence(text)
+    has_ma_evidence = _has_ma_evidence(text) or has_window_evidence
+    return has_cross_evidence and has_ma_evidence
+
+
+def _has_cross_evidence(text: str) -> bool:
+    if "金叉" in text or "死叉" in text:
+        return True
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"\bgolden\s+cross\b",
+            r"\bdeath\s+cross\b",
+            r"\bcrossover\b",
+            r"\bcross\b",
+        )
+    )
+
+
+def _has_ma_evidence(text: str) -> bool:
+    if "均线" in text:
+        return True
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"\bmoving\s+average\b",
+            r"\bma\b",
+            r"\bsma\b",
+            r"\bema\b",
+        )
+    )
 
 
 def _scan_safety_flags(parsed_payload: dict[str, Any]) -> list[str]:
@@ -287,10 +314,10 @@ def _parse_positive_int(value: Any, *, field_name: str) -> int | str:
 
 
 def _parse_initial_cash(value: Any) -> str:
-    if isinstance(value, bool):
+    if not isinstance(value, str):
         return "initial_cash must be a finite decimal string greater than 0"
     try:
-        parsed = Decimal(str(value).strip())
+        parsed = Decimal(value.strip())
     except (InvalidOperation, ValueError):
         return "initial_cash must be a finite decimal string greater than 0"
     if not parsed.is_finite() or parsed <= 0:

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 
 from quant_trading.agents.candidates import validate_strategy_candidate
@@ -88,9 +90,25 @@ def test_unknown_explicit_template_fails():
     assert result["candidate_payload"] is None
 
 
+@pytest.mark.parametrize("template_key", ["template", "strategy_name"])
+def test_template_aliases_accept_ma_cross(template_key):
+    spec = complete_ma_cross_spec()
+    spec.pop("strategy_template")
+    spec[template_key] = "ma_cross"
+
+    result = validate_strategy_candidate(spec, request_symbol="000001")
+
+    assert result["validation_status"] == "passed"
+    assert result["candidate_payload"]["strategy_name"] == "ma_cross"
+
+
 def test_missing_template_with_ma_cross_evidence_is_inferred():
     spec = complete_ma_cross_spec()
     spec.pop("strategy_template")
+    spec["entry_rules"] = [
+        "Enter research long exposure when the short moving average crossover is bullish."
+    ]
+    spec["exit_rules"] = ["Exit research exposure when the moving average cross reverses."]
 
     result = validate_strategy_candidate(spec, request_symbol="000001")
 
@@ -115,6 +133,39 @@ def test_missing_template_without_ma_cross_evidence_needs_review():
     ]
     assert result["candidate_payload"] is None
     assert result["backtest_request_payload"] is None
+
+
+def test_inference_requires_real_cross_term_with_window_parameters():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(
+            strategy_template=None,
+            entry_rules=["Enter across market regimes when trend strength improves."],
+            exit_rules=["Exit across market regimes when trend strength weakens."],
+            parameters_to_test={"short_window": 8, "long_window": 34},
+        ),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "needs_review"
+    assert result["validation_errors"] == [
+        "strategy template is not explicit or safely inferable"
+    ]
+    assert result["candidate_payload"] is None
+
+
+def test_inference_ignores_ma_substrings_inside_other_words():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(
+            strategy_template=None,
+            entry_rules=["Enter when signals cross during calmer market conditions."],
+            exit_rules=["Exit when signals cross back in market stress."],
+            parameters_to_test={"lookback": 10},
+        ),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "needs_review"
+    assert result["candidate_payload"] is None
 
 
 def test_code_like_content_sets_safety_flag_and_blocks_candidate():
@@ -163,6 +214,45 @@ def test_live_trading_recommendation_sets_safety_flag_and_blocks_candidate():
     assert result["candidate_payload"] is None
 
 
+def test_multiple_safety_flags_preserve_required_order():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(
+            thesis="```python\nimport os\n``` guaranteed return",
+            risk_controls=["Place order through broker API after the signal."],
+            backtest_readiness="Ready for live trading immediately.",
+        ),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "failed"
+    assert result["safety_flags"] == [
+        "contains_executable_code",
+        "contains_broker_or_order_instruction",
+        "contains_profitability_claim",
+        "contains_live_trading_recommendation",
+    ]
+    assert result["candidate_payload"] is None
+
+
+def test_nested_safety_scan_blocks_candidate():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(
+            risk_controls=[
+                {
+                    "execution_notes": [
+                        {"operator_instruction": "Send order through exchange API."}
+                    ]
+                }
+            ]
+        ),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "failed"
+    assert result["safety_flags"] == ["contains_broker_or_order_instruction"]
+    assert result["candidate_payload"] is None
+
+
 @pytest.mark.parametrize(
     ("parameters", "expected_error"),
     [
@@ -179,6 +269,23 @@ def test_live_trading_recommendation_sets_safety_flag_and_blocks_candidate():
             {"initial_cash": "NaN"},
             "initial_cash must be a finite decimal string greater than 0",
         ),
+        (
+            {"short_window": True, "long_window": 20},
+            "short_window must be an integer greater than 0",
+        ),
+        ({"order_size": False}, "order_size must be an integer greater than 0"),
+        (
+            {"initial_cash": True},
+            "initial_cash must be a finite decimal string greater than 0",
+        ),
+        (
+            {"initial_cash": 100000},
+            "initial_cash must be a finite decimal string greater than 0",
+        ),
+        (
+            {"initial_cash": Decimal("100000")},
+            "initial_cash must be a finite decimal string greater than 0",
+        ),
     ],
 )
 def test_invalid_parameters_block_candidate(parameters, expected_error):
@@ -192,10 +299,83 @@ def test_invalid_parameters_block_candidate(parameters, expected_error):
     assert result["candidate_payload"] is None
 
 
+def test_parameter_defaults_when_supported_parameters_are_missing():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(parameters_to_test={"notes": "Use MA cross research."}),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["candidate_payload"]["parameters"] == {
+        "short_window": 5,
+        "long_window": 20,
+        "order_size": 100,
+    }
+    assert result["backtest_request_payload"]["payload"]["initial_cash"] == "100000"
+
+
+def test_nested_parameters_outside_parameters_to_test_are_found():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(
+            parameters_to_test={"notes": "Use moving average cross research."},
+            research_config={
+                "parameters": {
+                    "short_window": 13,
+                    "long_window": 55,
+                    "order_size": 300,
+                    "initial_cash": "250000.00",
+                }
+            },
+        ),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["candidate_payload"]["parameters"] == {
+        "short_window": 13,
+        "long_window": 55,
+        "order_size": 300,
+    }
+    assert result["backtest_request_payload"]["payload"]["initial_cash"] == "250000.00"
+
+
+def test_initial_cash_accepts_decimal_string():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(parameters_to_test={"initial_cash": "100000"}),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["backtest_request_payload"]["payload"]["initial_cash"] == "100000"
+
+
 def test_symbol_can_come_from_llm_spec_when_request_symbol_is_missing():
     result = validate_strategy_candidate(
         complete_ma_cross_spec(symbol="600000"),
         request_symbol=None,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["backtest_request_payload"]["payload"]["symbol"] == "600000"
+
+
+def test_symbol_is_stripped_capped_and_request_takes_precedence():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(symbol="600000"),
+        request_symbol="  12345678901234567890123456789012345  ",
+    )
+
+    assert result["validation_status"] == "passed"
+    assert (
+        result["backtest_request_payload"]["payload"]["symbol"]
+        == "12345678901234567890123456789012"
+    )
+
+
+def test_blank_request_symbol_falls_back_to_spec_symbol():
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(symbol="  600000  "),
+        request_symbol="   ",
     )
 
     assert result["validation_status"] == "passed"
@@ -212,3 +392,22 @@ def test_missing_symbol_blocks_backtest_request():
     assert "missing symbol" in result["validation_errors"]
     assert result["candidate_payload"] is None
     assert result["backtest_request_payload"] is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("thesis", "   "),
+        ("entry_rules", []),
+        ("risk_controls", {}),
+    ],
+)
+def test_blank_string_and_empty_collection_required_fields_fail(field, value):
+    result = validate_strategy_candidate(
+        complete_ma_cross_spec(**{field: value}),
+        request_symbol="000001",
+    )
+
+    assert result["validation_status"] == "failed"
+    assert f"missing field: {field}" in result["validation_errors"]
+    assert result["candidate_payload"] is None

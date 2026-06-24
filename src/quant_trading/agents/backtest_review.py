@@ -23,6 +23,25 @@ ALLOWED_PAPER_TRADING_READINESS = {
     "ready_for_paper_research",
 }
 _SUMMARY_LIMIT = 500
+_SAFE_MANUAL_REVIEW_STEP = (
+    "review the backtest output manually before any further research action"
+)
+_UNSAFE_TEXT_MARKERS = (
+    "start paper trading",
+    "approve paper trading",
+    "paper trade",
+    "paper run",
+    "buy ",
+    "sell ",
+    "broker",
+    "exchange",
+    "submit order",
+    "place order",
+    "live order",
+    "live trading",
+    "execute trade",
+    "call broker",
+)
 
 
 def build_backtest_review_prompt(context: dict[str, Any], max_chars: int) -> str:
@@ -83,14 +102,28 @@ def parse_backtest_review_response(
 
     readiness = _clean_text(decoded.get("paper_trading_readiness"))
     summary = _bounded_summary(decoded.get("summary"))
+    risk_flags = _string_list(decoded.get("risk_flags"))
+    overfit_warnings = _string_list(decoded.get("overfit_warnings"))
+    recommended_next_steps = _string_list(decoded.get("recommended_next_steps"))
     review_status = "completed"
+    issues = []
     if readiness not in ALLOWED_PAPER_TRADING_READINESS:
         review_status = "needs_review"
         invalid_value = readiness or "<missing>"
-        summary = _bounded_summary(
-            f"invalid paper_trading_readiness: {invalid_value}. {summary}"
-        )
+        issues.append(f"invalid paper_trading_readiness: {invalid_value}")
         readiness = "needs_review"
+    if _contains_unsafe_text(
+        [summary, *risk_flags, *overfit_warnings, *recommended_next_steps]
+    ):
+        review_status = "needs_review"
+        readiness = "needs_review"
+        issues.append("unsafe trading or paper/order instruction text")
+
+    if issues:
+        summary = _bounded_summary("; ".join(issues))
+        risk_flags = ["unsafe_structured_review_output"]
+        overfit_warnings = []
+        recommended_next_steps = [_SAFE_MANUAL_REVIEW_STEP]
 
     return {
         "candidate_review_id": candidate_review_id,
@@ -98,10 +131,10 @@ def parse_backtest_review_response(
         "review_status": review_status,
         "research_only": True,
         "summary": summary,
-        "risk_flags": _string_list(decoded.get("risk_flags")),
-        "overfit_warnings": _string_list(decoded.get("overfit_warnings")),
+        "risk_flags": risk_flags,
+        "overfit_warnings": overfit_warnings,
         "paper_trading_readiness": readiness,
-        "recommended_next_steps": _string_list(decoded.get("recommended_next_steps")),
+        "recommended_next_steps": recommended_next_steps,
     }
 
 
@@ -301,3 +334,11 @@ def _string_list(value: Any) -> list[str]:
         if cleaned:
             result.append(cleaned[:200])
     return result
+
+
+def _contains_unsafe_text(values: list[str]) -> bool:
+    for value in values:
+        lowered = value.lower()
+        if any(marker in lowered for marker in _UNSAFE_TEXT_MARKERS):
+            return True
+    return False

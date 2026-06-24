@@ -101,6 +101,45 @@ def test_parse_backtest_review_response_forces_invalid_readiness_to_needs_review
     assert parsed["research_only"] is True
     assert parsed["paper_trading_readiness"] == "needs_review"
     assert "invalid paper_trading_readiness" in parsed["summary"]
+    assert parsed["recommended_next_steps"] == [
+        "review the backtest output manually before any further research action"
+    ]
+
+
+def test_parse_backtest_review_response_sanitizes_dangerous_structured_text():
+    parsed = parse_backtest_review_response(
+        json.dumps(
+            {
+                "summary": "Start paper trading now and buy 000001 through your broker.",
+                "risk_flags": ["call broker to submit live order"],
+                "overfit_warnings": ["buy 000001 after open"],
+                "paper_trading_readiness": "approved_for_live_trading",
+                "recommended_next_steps": [
+                    "start paper trading",
+                    "buy 000001",
+                    "call broker and submit live order",
+                ],
+            }
+        ),
+        candidate_review_id=7,
+        backtest_run_id=11,
+    )
+
+    serialized = json.dumps(parsed, ensure_ascii=False).lower()
+    assert parsed["review_status"] == "needs_review"
+    assert parsed["research_only"] is True
+    assert parsed["paper_trading_readiness"] == "needs_review"
+    assert parsed["risk_flags"] == ["unsafe_structured_review_output"]
+    assert parsed["overfit_warnings"] == []
+    assert parsed["recommended_next_steps"] == [
+        "review the backtest output manually before any further research action"
+    ]
+    assert "invalid paper_trading_readiness" in parsed["summary"]
+    assert "unsafe trading or paper/order instruction text" in parsed["summary"]
+    assert "start paper trading" not in serialized
+    assert "buy 000001" not in serialized
+    assert "broker" not in serialized
+    assert "live order" not in serialized
 
 
 def test_parse_backtest_review_response_falls_back_for_unstructured_content():

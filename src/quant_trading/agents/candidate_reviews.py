@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 import json
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import Engine
 
@@ -12,7 +12,7 @@ from quant_trading.agents.models import AGENT_STRATEGY_IDEA
 from quant_trading.config import AppSettings
 from quant_trading.jobs.queue import make_queue
 from quant_trading.jobs.runtime import utcnow
-from quant_trading.jobs.service import submit_job_run
+from quant_trading.jobs.service import QueueLike, submit_job_run
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import AgentCandidateReviewORM
 from quant_trading.storage.repositories import (
@@ -43,6 +43,34 @@ _SUBMITTED_STATUSES = {
 _MAX_OPERATOR_LENGTH = 128
 _MAX_NOTE_LENGTH = 1000
 _MAX_ERROR_LENGTH = 1000
+
+
+class _JobRunIdCaptureQueue:
+    def __init__(self, queue: QueueLike):
+        self.queue = queue
+        self.job_run_id: int | None = None
+
+    def enqueue(self, func, *args):
+        if len(args) >= 2:
+            try:
+                self.job_run_id = int(args[1])
+            except (TypeError, ValueError):
+                self.job_run_id = None
+        return self.queue.enqueue(func, *args)
+
+
+class _JobRunIdCaptureQueueFactory:
+    def __init__(self, queue_factory: Callable[[str], QueueLike]):
+        self.queue_factory = queue_factory
+        self.queue: _JobRunIdCaptureQueue | None = None
+
+    def __call__(self, redis_url: str) -> _JobRunIdCaptureQueue:
+        self.queue = _JobRunIdCaptureQueue(self.queue_factory(redis_url))
+        return self.queue
+
+    @property
+    def job_run_id(self) -> int | None:
+        return self.queue.job_run_id if self.queue is not None else None
 
 
 class CandidateReviewError(ValueError):
@@ -116,16 +144,22 @@ def approve_strategy_candidate(
         )
         review_id = review.id
 
+    captured_queue_factory = _JobRunIdCaptureQueueFactory(queue_factory)
     try:
         job = submit_job_run(
             engine,
             settings,
             BACKTEST_MA_CROSS,
             backtest_request["payload"],
-            queue_factory,
+            captured_queue_factory,
         )
     except Exception as exc:
-        return _mark_submit_failed(engine, review_id, str(exc))
+        return _mark_submit_failed(
+            engine,
+            review_id,
+            str(exc),
+            backtest_job_run_id=captured_queue_factory.job_run_id,
+        )
 
     with session_scope(engine) as session:
         review_repo = AgentCandidateReviewRepository(session)
@@ -245,17 +279,37 @@ def _mark_submit_failed(
     engine: Engine,
     review_id: int,
     error_message: str,
+    *,
+    backtest_job_run_id: int | None = None,
 ) -> AgentCandidateReviewORM:
     with session_scope(engine) as session:
-        review = AgentCandidateReviewRepository(session).get(review_id)
+        review_repo = AgentCandidateReviewRepository(session)
+        job_repo = JobRunRepository(session)
+        review = review_repo.get(review_id)
         if review is None:
             raise CandidateReviewNotFoundError("candidate review not found")
-        AgentCandidateReviewRepository(session).mark_backtest_failed(
+        now = _now()
+        capped_error = (error_message or "backtest submission failed")[
+            :_MAX_ERROR_LENGTH
+        ]
+        if backtest_job_run_id is not None:
+            review_repo.mark_backtest_submitted(
+                review,
+                backtest_job_run_id=backtest_job_run_id,
+                updated_at=now,
+            )
+            job = job_repo.get(backtest_job_run_id)
+            if job is not None:
+                job_repo.mark_failed(
+                    job,
+                    capped_error,
+                    finished_at=now,
+                    duration_ms=0,
+                )
+        review_repo.mark_backtest_failed(
             review,
-            error_message=(error_message or "backtest submission failed")[
-                :_MAX_ERROR_LENGTH
-            ],
-            updated_at=_now(),
+            error_message=capped_error,
+            updated_at=now,
         )
         session.expunge(review)
         return review

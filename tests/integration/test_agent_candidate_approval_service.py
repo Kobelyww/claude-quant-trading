@@ -203,7 +203,7 @@ def test_approving_with_missing_market_data_records_backtest_failure():
     assert counts["broker_events"] == 0
 
 
-def test_rq_enqueue_failure_marks_review_backtest_failed_without_linked_job():
+def test_rq_enqueue_failure_marks_review_and_created_job_failed_without_orphan():
     class FailingQueue:
         def enqueue(self, func, *args):
             raise RuntimeError("rq enqueue unavailable")
@@ -221,9 +221,21 @@ def test_rq_enqueue_failure_marks_review_backtest_failed_without_linked_job():
     )
 
     assert review.status == "backtest_failed"
-    assert review.backtest_job_run_id is None
+    assert review.backtest_job_run_id is not None
     assert review.backtest_run_id is None
     assert review.error_message == "rq enqueue unavailable"
+    with session_scope(engine) as session:
+        job = session.get(JobRunORM, review.backtest_job_run_id)
+        assert job is not None
+        assert job.status == "failed"
+        assert job.error_message == "rq enqueue unavailable"
+        orphaned_queued_jobs = session.scalars(
+            select(JobRunORM).where(
+                JobRunORM.job_type == BACKTEST_MA_CROSS,
+                JobRunORM.status == "queued",
+            )
+        ).all()
+        assert orphaned_queued_jobs == []
     with pytest.raises(CandidateReviewConflictError, match="candidate already submitted"):
         approve_strategy_candidate(
             engine,

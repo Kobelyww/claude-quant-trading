@@ -14,6 +14,7 @@ from quant_trading.jobs.queue import make_queue
 from quant_trading.jobs.runtime import (
     BACKTEST_MA_CROSS,
     IMPORT_LEGACY,
+    JOB_AGENT_BACKTEST_REVIEW,
     JOB_AGENT_MARKET_ANALYSIS,
     JOB_AGENT_STRATEGY_IDEA,
     MARKET_DATA_SYNC,
@@ -48,6 +49,11 @@ class AgentStrategyIdeaRequest(BaseModel):
     symbol: str | None = Field(default=None, max_length=32)
     market_context: str | None = Field(default=None, max_length=2000)
     constraints: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentBacktestReviewRequest(BaseModel):
+    candidate_review_id: int = Field(gt=0)
+    backtest_run_id: int | None = Field(default=None, gt=0)
 
 
 @router.post("/import-legacy")
@@ -128,6 +134,22 @@ def create_agent_strategy_idea_job(
             request.app.state.engine,
             request.app.state.settings,
             JOB_AGENT_STRATEGY_IDEA,
+            _agent_job_payload(payload.model_dump(mode="json"), request.app.state.settings),
+            make_queue,
+        )
+    )
+
+
+@router.post("/agents/backtest-review")
+def create_agent_backtest_review_job(
+    payload: AgentBacktestReviewRequest,
+    request: Request,
+) -> dict[str, Any]:
+    return _job_payload(
+        submit_job_run(
+            request.app.state.engine,
+            request.app.state.settings,
+            JOB_AGENT_BACKTEST_REVIEW,
             _agent_job_payload(payload.model_dump(mode="json"), request.app.state.settings),
             make_queue,
         )

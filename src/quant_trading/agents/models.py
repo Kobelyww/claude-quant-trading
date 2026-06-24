@@ -6,6 +6,7 @@ from typing import Any
 
 AGENT_MARKET_ANALYSIS = "market_analysis"
 AGENT_STRATEGY_IDEA = "strategy_idea"
+AGENT_BACKTEST_REVIEW = "backtest_review"
 
 STATUS_RUNNING = "running"
 STATUS_SUCCEEDED = "succeeded"
@@ -41,6 +42,12 @@ class StrategyIdeaRequest:
     symbol: str | None = None
     market_context: str | None = None
     constraints: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BacktestReviewRequest:
+    candidate_review_id: int
+    backtest_run_id: int | None = None
 
 
 @dataclass(frozen=True)

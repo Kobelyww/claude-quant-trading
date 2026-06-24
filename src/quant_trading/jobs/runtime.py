@@ -10,8 +10,16 @@ from collections.abc import Callable
 from sqlalchemy import Engine
 
 from quant_trading.agents.llm import DeepSeekLLMClient, LLMClient
-from quant_trading.agents.models import MarketAnalysisRequest, StrategyIdeaRequest
-from quant_trading.agents.service import run_market_analysis_agent, run_strategy_idea_agent
+from quant_trading.agents.models import (
+    BacktestReviewRequest,
+    MarketAnalysisRequest,
+    StrategyIdeaRequest,
+)
+from quant_trading.agents.service import (
+    run_backtest_review_agent,
+    run_market_analysis_agent,
+    run_strategy_idea_agent,
+)
 from quant_trading.config import AppSettings
 from quant_trading.data.providers.registry import build_default_provider_registry
 from quant_trading.data.sync import sync_daily_market_data
@@ -31,6 +39,7 @@ PAPER_RUN_TICK = "paper_run_tick"
 MARKET_DATA_SYNC = "market_data_sync"
 JOB_AGENT_MARKET_ANALYSIS = "agent_market_analysis"
 JOB_AGENT_STRATEGY_IDEA = "agent_strategy_idea"
+JOB_AGENT_BACKTEST_REVIEW = "agent_backtest_review"
 SUPPORTED_JOB_TYPES = {
     IMPORT_LEGACY,
     BACKTEST_MA_CROSS,
@@ -38,6 +47,13 @@ SUPPORTED_JOB_TYPES = {
     MARKET_DATA_SYNC,
     JOB_AGENT_MARKET_ANALYSIS,
     JOB_AGENT_STRATEGY_IDEA,
+    JOB_AGENT_BACKTEST_REVIEW,
+}
+
+AGENT_JOB_TYPES = {
+    JOB_AGENT_MARKET_ANALYSIS,
+    JOB_AGENT_STRATEGY_IDEA,
+    JOB_AGENT_BACKTEST_REVIEW,
 }
 
 
@@ -70,7 +86,7 @@ def execute_job_run_with_engine(engine: Engine, job_run_id: int) -> dict[str, An
         )
         job_type = job.job_type
         request_payload = _json_loads(job.request_payload)
-        if job_type in {MARKET_DATA_SYNC, JOB_AGENT_MARKET_ANALYSIS, JOB_AGENT_STRATEGY_IDEA}:
+        if job_type in {MARKET_DATA_SYNC, *AGENT_JOB_TYPES}:
             request_payload = {**request_payload, "job_run_id": job_run_id}
 
     try:
@@ -91,7 +107,7 @@ def execute_job_run_with_engine(engine: Engine, job_run_id: int) -> dict[str, An
                     job_type,
                     request_payload,
                     settings=_settings_from_agent_payload(request_payload)
-                    if job_type in {JOB_AGENT_MARKET_ANALYSIS, JOB_AGENT_STRATEGY_IDEA}
+                    if job_type in AGENT_JOB_TYPES
                     else None,
                     cancellation_token=cancellation_token,
                     progress_callback=progress_callback,
@@ -241,6 +257,22 @@ def _execute_payload(
                 constraints=payload.get("constraints")
                 if isinstance(payload.get("constraints"), dict)
                 else {},
+            ),
+            llm_client_factory=build_agent_llm_client,
+            job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,
+            settings=settings,
+        )
+    if job_type == JOB_AGENT_BACKTEST_REVIEW:
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        settings = settings or _settings_from_agent_payload(payload)
+        return run_backtest_review_agent(
+            engine,
+            BacktestReviewRequest(
+                candidate_review_id=int(payload["candidate_review_id"]),
+                backtest_run_id=int(payload["backtest_run_id"])
+                if payload.get("backtest_run_id")
+                else None,
             ),
             llm_client_factory=build_agent_llm_client,
             job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,

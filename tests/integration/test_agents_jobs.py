@@ -141,3 +141,27 @@ def test_strategy_idea_job_api_submits_agent_job(monkeypatch):
     assert payload["job_type"] == "agent_strategy_idea"
     assert payload["status"] == "succeeded"
     assert payload["result_payload"]["agent_type"] == "strategy_idea"
+
+
+def test_agent_jobs_do_not_create_broker_order_events(monkeypatch, legacy_sqlite_db: Path):
+    from quant_trading.jobs import runtime as runtime_module
+    from quant_trading.storage.models import BrokerOrderEventORM
+
+    monkeypatch.setattr(
+        runtime_module,
+        "build_agent_llm_client",
+        lambda settings: FakeLLMClient("市场研究报告"),
+    )
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    import_legacy_sqlite(legacy_sqlite_db, engine)
+    client = TestClient(create_app(engine=engine, settings=AppSettings(job_executor="inline")))
+
+    response = client.post(
+        "/jobs/agents/market-analysis",
+        json={"symbol": "000001", "lookback_bars": 60},
+    )
+
+    assert response.status_code == 200
+    with session_scope(engine) as session:
+        assert session.query(BrokerOrderEventORM).count() == 0

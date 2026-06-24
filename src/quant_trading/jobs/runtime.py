@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 import json
 import time
@@ -9,6 +9,10 @@ from collections.abc import Callable
 
 from sqlalchemy import Engine
 
+from quant_trading.agents.llm import DeepSeekLLMClient, LLMClient
+from quant_trading.agents.models import MarketAnalysisRequest, StrategyIdeaRequest
+from quant_trading.agents.service import run_market_analysis_agent, run_strategy_idea_agent
+from quant_trading.config import AppSettings
 from quant_trading.data.providers.registry import build_default_provider_registry
 from quant_trading.data.sync import sync_daily_market_data
 from quant_trading.jobs.cancellation import CancellationToken, JobCancelled
@@ -25,7 +29,16 @@ IMPORT_LEGACY = "import_legacy"
 BACKTEST_MA_CROSS = "backtest_ma_cross"
 PAPER_RUN_TICK = "paper_run_tick"
 MARKET_DATA_SYNC = "market_data_sync"
-SUPPORTED_JOB_TYPES = {IMPORT_LEGACY, BACKTEST_MA_CROSS, PAPER_RUN_TICK, MARKET_DATA_SYNC}
+JOB_AGENT_MARKET_ANALYSIS = "agent_market_analysis"
+JOB_AGENT_STRATEGY_IDEA = "agent_strategy_idea"
+SUPPORTED_JOB_TYPES = {
+    IMPORT_LEGACY,
+    BACKTEST_MA_CROSS,
+    PAPER_RUN_TICK,
+    MARKET_DATA_SYNC,
+    JOB_AGENT_MARKET_ANALYSIS,
+    JOB_AGENT_STRATEGY_IDEA,
+}
 
 
 def execute_job_run(database_url: str, job_run_id: int) -> dict[str, Any]:
@@ -57,7 +70,7 @@ def execute_job_run_with_engine(engine: Engine, job_run_id: int) -> dict[str, An
         )
         job_type = job.job_type
         request_payload = _json_loads(job.request_payload)
-        if job_type == MARKET_DATA_SYNC:
+        if job_type in {MARKET_DATA_SYNC, JOB_AGENT_MARKET_ANALYSIS, JOB_AGENT_STRATEGY_IDEA}:
             request_payload = {**request_payload, "job_run_id": job_run_id}
 
     try:
@@ -73,13 +86,16 @@ def execute_job_run_with_engine(engine: Engine, job_run_id: int) -> dict[str, An
         execution = WorkflowCommandRunner(engine).run_with_audit(
             job_type,
             request_payload,
-            lambda: _execute_payload(
-                engine,
-                job_type,
-                request_payload,
-                cancellation_token=cancellation_token,
-                progress_callback=progress_callback,
-            ),
+                lambda: _execute_payload(
+                    engine,
+                    job_type,
+                    request_payload,
+                    settings=_settings_from_agent_payload(request_payload)
+                    if job_type in {JOB_AGENT_MARKET_ANALYSIS, JOB_AGENT_STRATEGY_IDEA}
+                    else None,
+                    cancellation_token=cancellation_token,
+                    progress_callback=progress_callback,
+                ),
         )
     except JobCancelled as exc:
         finished_at = utcnow()
@@ -149,11 +165,16 @@ def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def build_agent_llm_client(settings: AppSettings) -> LLMClient:
+    return DeepSeekLLMClient.from_settings(settings)
+
+
 def _execute_payload(
     engine: Engine,
     job_type: str,
     payload: dict[str, Any],
     *,
+    settings: AppSettings | None = None,
     cancellation_token: CancellationToken | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict[str, Any]:
@@ -188,6 +209,43 @@ def _execute_payload(
             cancellation_token=cancellation_token,
             progress_callback=progress_callback,
         )
+    if job_type == JOB_AGENT_MARKET_ANALYSIS:
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        settings = settings or _settings_from_agent_payload(payload)
+        return run_market_analysis_agent(
+            engine,
+            MarketAnalysisRequest(
+                symbol=str(payload["symbol"]),
+                start=date.fromisoformat(payload["start"]) if payload.get("start") else None,
+                end=date.fromisoformat(payload["end"]) if payload.get("end") else None,
+                lookback_bars=int(payload.get("lookback_bars", 252)),
+                mode=str(payload.get("mode", "overview")),
+            ),
+            llm_client_factory=build_agent_llm_client,
+            job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,
+            settings=settings,
+        )
+    if job_type == JOB_AGENT_STRATEGY_IDEA:
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+        settings = settings or _settings_from_agent_payload(payload)
+        return run_strategy_idea_agent(
+            engine,
+            StrategyIdeaRequest(
+                idea=str(payload["idea"]),
+                symbol=str(payload["symbol"]) if payload.get("symbol") else None,
+                market_context=str(payload["market_context"])
+                if payload.get("market_context")
+                else None,
+                constraints=payload.get("constraints")
+                if isinstance(payload.get("constraints"), dict)
+                else {},
+            ),
+            llm_client_factory=build_agent_llm_client,
+            job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,
+            settings=settings,
+        )
     raise ValueError(f"unsupported job type: {job_type}")
 
 
@@ -214,6 +272,15 @@ def _json_loads(value: str | None) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise ValueError("job payload must be an object")
     return loaded
+
+
+def _settings_from_agent_payload(payload: dict[str, Any]) -> AppSettings:
+    return AppSettings(
+        deepseek_api_base=str(payload.get("deepseek_api_base") or "https://api.deepseek.com"),
+        deepseek_model=str(payload.get("deepseek_model") or "deepseek-v4-pro"),
+        agent_prompt_max_chars=int(payload.get("agent_prompt_max_chars") or 8000),
+        agent_result_max_chars=int(payload.get("agent_result_max_chars") or 12000),
+    )
 
 
 def _duration_ms(started_counter: float) -> int:

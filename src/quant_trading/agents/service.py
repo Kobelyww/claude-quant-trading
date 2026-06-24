@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from collections.abc import Callable
 from typing import Any
 import json
 import time
@@ -33,11 +34,11 @@ def run_market_analysis_agent(
     request: MarketAnalysisRequest,
     *,
     llm_client: LLMClient | None = None,
+    llm_client_factory: Callable[[AppSettings], LLMClient] | None = None,
     job_run_id: int | None = None,
     settings: AppSettings | None = None,
 ) -> dict[str, Any]:
     settings = settings or AppSettings()
-    llm_client = llm_client or DeepSeekLLMClient.from_settings(settings)
     started_at = _utcnow()
     started_counter = time.perf_counter()
     request_payload = _json_dumps(
@@ -54,7 +55,7 @@ def run_market_analysis_agent(
         row = AgentRunRepository(session).create_running(
             agent_type=AGENT_MARKET_ANALYSIS,
             symbol=request.symbol,
-            model_name=getattr(llm_client, "model", "unknown"),
+            model_name=getattr(llm_client, "model", settings.deepseek_model),
             request_payload=request_payload,
             job_run_id=job_run_id,
             started_at=started_at,
@@ -62,6 +63,7 @@ def run_market_analysis_agent(
         agent_run_id = row.id
 
     try:
+        llm_client = llm_client or (llm_client_factory or DeepSeekLLMClient.from_settings)(settings)
         with session_scope(engine) as session:
             bars = MarketDataRepository(session).list_bars(request.symbol)
         if request.start:
@@ -110,11 +112,11 @@ def run_strategy_idea_agent(
     request: StrategyIdeaRequest,
     *,
     llm_client: LLMClient | None = None,
+    llm_client_factory: Callable[[AppSettings], LLMClient] | None = None,
     job_run_id: int | None = None,
     settings: AppSettings | None = None,
 ) -> dict[str, Any]:
     settings = settings or AppSettings()
-    llm_client = llm_client or DeepSeekLLMClient.from_settings(settings)
     started_at = _utcnow()
     started_counter = time.perf_counter()
     clean_request = StrategyIdeaRequest(
@@ -137,7 +139,7 @@ def run_strategy_idea_agent(
         row = AgentRunRepository(session).create_running(
             agent_type=AGENT_STRATEGY_IDEA,
             symbol=clean_request.symbol,
-            model_name=getattr(llm_client, "model", "unknown"),
+            model_name=getattr(llm_client, "model", settings.deepseek_model),
             request_payload=request_payload,
             job_run_id=job_run_id,
             started_at=started_at,
@@ -145,6 +147,7 @@ def run_strategy_idea_agent(
         agent_run_id = row.id
 
     try:
+        llm_client = llm_client or (llm_client_factory or DeepSeekLLMClient.from_settings)(settings)
         prompt = build_strategy_idea_prompt(clean_request, settings.agent_prompt_max_chars)
         response = llm_client.complete(prompt)
         parsed_payload = parse_strategy_idea_response(

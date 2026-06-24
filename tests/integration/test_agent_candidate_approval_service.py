@@ -360,7 +360,8 @@ def test_refresh_queued_backtest_status_rejects_incomplete_job():
         refresh_candidate_backtest_status(engine, review.id)
 
 
-def test_refresh_succeeded_job_without_integer_run_id_marks_review_failed():
+@pytest.mark.parametrize("run_id", ["99", True])
+def test_refresh_succeeded_job_without_integer_run_id_marks_review_failed(run_id):
     class FakeRqJob:
         id = "queued-job"
 
@@ -382,7 +383,7 @@ def test_refresh_succeeded_job_without_integer_run_id_marks_review_failed():
         job = session.get(JobRunORM, review.backtest_job_run_id)
         assert job is not None
         job.status = "succeeded"
-        job.result_payload = json.dumps({"run_id": "99"}, sort_keys=True)
+        job.result_payload = json.dumps({"run_id": run_id}, sort_keys=True)
         job.finished_at = datetime(2026, 6, 24, 9, 1, 1)
 
     refreshed = refresh_candidate_backtest_status(engine, review.id)

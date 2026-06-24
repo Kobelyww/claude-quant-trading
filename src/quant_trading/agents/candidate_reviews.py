@@ -179,7 +179,7 @@ def approve_strategy_candidate(
         if job_row is not None and job_row.status == "succeeded":
             result_payload = _json_loads(job_row.result_payload)
             run_id = result_payload.get("run_id")
-            if isinstance(run_id, int):
+            if type(run_id) is int:
                 review_repo.mark_backtest_succeeded(
                     review,
                     backtest_run_id=run_id,
@@ -270,7 +270,7 @@ def refresh_candidate_backtest_status(
         if job.status == "succeeded":
             result_payload = _json_loads(job.result_payload)
             run_id = result_payload.get("run_id")
-            if isinstance(run_id, int):
+            if type(run_id) is int:
                 review_repo.mark_backtest_succeeded(
                     review,
                     backtest_run_id=run_id,

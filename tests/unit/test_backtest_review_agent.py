@@ -2,6 +2,8 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 
+import pytest
+
 from quant_trading.agents.backtest_review import (
     build_backtest_review_prompt,
     load_backtest_review_context,
@@ -140,6 +142,45 @@ def test_parse_backtest_review_response_sanitizes_dangerous_structured_text():
     assert "buy 000001" not in serialized
     assert "broker" not in serialized
     assert "live order" not in serialized
+
+
+@pytest.mark.parametrize(
+    "unsafe_text",
+    [
+        "buy",
+        "sell.",
+        "create a paper trading run",
+        "submit market orders after review",
+        "live market order after review",
+    ],
+)
+def test_parse_backtest_review_response_sanitizes_unsafe_text_variants(unsafe_text):
+    parsed = parse_backtest_review_response(
+        json.dumps(
+            {
+                "summary": "Manual review needed.",
+                "risk_flags": [],
+                "overfit_warnings": [],
+                "paper_trading_readiness": "ready_for_paper_research",
+                "recommended_next_steps": [unsafe_text],
+            }
+        ),
+        candidate_review_id=7,
+        backtest_run_id=11,
+    )
+
+    unsafe_text_lower = unsafe_text.lower()
+    fields = [
+        parsed["summary"],
+        *parsed["recommended_next_steps"],
+        *parsed["risk_flags"],
+        *parsed["overfit_warnings"],
+    ]
+    serialized_fields = json.dumps(fields, ensure_ascii=False).lower()
+    assert parsed["review_status"] == "needs_review"
+    assert parsed["paper_trading_readiness"] == "needs_review"
+    assert parsed["research_only"] is True
+    assert unsafe_text_lower not in serialized_fields
 
 
 def test_parse_backtest_review_response_falls_back_for_unstructured_content():

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
+import re
 from typing import Any
 
 from sqlalchemy import Engine, func, select
@@ -26,21 +27,22 @@ _SUMMARY_LIMIT = 500
 _SAFE_MANUAL_REVIEW_STEP = (
     "review the backtest output manually before any further research action"
 )
-_UNSAFE_TEXT_MARKERS = (
-    "start paper trading",
-    "approve paper trading",
-    "paper trade",
-    "paper run",
-    "buy ",
-    "sell ",
-    "broker",
-    "exchange",
-    "submit order",
-    "place order",
-    "live order",
-    "live trading",
-    "execute trade",
-    "call broker",
+_UNSAFE_TEXT_PATTERNS = (
+    re.compile(r"\b(?:buy|sell)\b", re.IGNORECASE),
+    re.compile(r"\bpaper\s+(?:trading|trade|run|runs)\b", re.IGNORECASE),
+    re.compile(r"\b(?:broker|brokers|exchange|exchanges)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:submit|place|send|create|execute)\b.{0,40}\b"
+        r"(?:order|orders|market\s+order|market\s+orders)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:order|orders|market\s+order|market\s+orders)\b.{0,40}\b"
+        r"(?:submit|place|send|create|execute)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\blive\s+(?:trading|order|orders|market\s+order|market\s+orders)\b", re.IGNORECASE),
+    re.compile(r"\bmarket\s+orders?\b", re.IGNORECASE),
 )
 
 
@@ -338,7 +340,6 @@ def _string_list(value: Any) -> list[str]:
 
 def _contains_unsafe_text(values: list[str]) -> bool:
     for value in values:
-        lowered = value.lower()
-        if any(marker in lowered for marker in _UNSAFE_TEXT_MARKERS):
+        if any(pattern.search(value) for pattern in _UNSAFE_TEXT_PATTERNS):
             return True
     return False

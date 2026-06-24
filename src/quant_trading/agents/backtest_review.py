@@ -310,12 +310,17 @@ def _fallback_review(
     candidate_review_id: int,
     backtest_run_id: int,
 ) -> dict[str, Any]:
+    summary = (
+        "unstructured review output requires manual review"
+        if _contains_unsafe_text([content])
+        else _bounded_summary(content)
+    )
     return {
         "candidate_review_id": candidate_review_id,
         "backtest_run_id": backtest_run_id,
         "review_status": "needs_review",
         "research_only": True,
-        "summary": "unstructured review output requires manual review",
+        "summary": summary,
         "risk_flags": ["unstructured_review_output"],
         "overfit_warnings": [],
         "paper_trading_readiness": "needs_review",

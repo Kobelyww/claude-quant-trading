@@ -299,14 +299,14 @@ def test_parse_backtest_review_response_falls_back_for_unstructured_content():
     assert parsed["backtest_run_id"] == 11
     assert parsed["review_status"] == "needs_review"
     assert parsed["research_only"] is True
-    assert parsed["summary"] == "unstructured review output requires manual review"
+    assert parsed["summary"] == content[:500]
     assert parsed["risk_flags"] == ["unstructured_review_output"]
     assert parsed["overfit_warnings"] == []
     assert parsed["paper_trading_readiness"] == "needs_review"
     assert parsed["recommended_next_steps"] == [
         "review the backtest output manually before any further research action"
     ]
-    assert content not in serialized
+    assert len(parsed["summary"]) <= 500
 
 
 def test_parse_backtest_review_response_falls_back_for_non_dict_json():

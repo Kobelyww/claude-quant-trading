@@ -23,7 +23,10 @@ from quant_trading.storage.models import (
     JobRunORM,
     PaperRunORM,
 )
-from quant_trading.storage.repositories import AgentRunRepository
+from quant_trading.storage.repositories import (
+    AgentCandidateReviewRepository,
+    AgentRunRepository,
+)
 
 
 def _settings() -> AppSettings:
@@ -455,6 +458,50 @@ def test_refresh_cancelled_job_marks_review_failed():
     assert refreshed.status == "backtest_failed"
     assert refreshed.backtest_run_id is None
     assert refreshed.error_message == "cancelled"
+
+
+def test_refresh_rejects_post_review_candidate_state_without_rollback(
+    legacy_sqlite_db,
+):
+    engine = _create_engine()
+    import_legacy_sqlite(legacy_sqlite_db, engine)
+    source_id = _create_source_agent_run(engine)
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved",
+        settings=_settings(),
+    )
+    with session_scope(engine) as session:
+        agent_run = AgentRunRepository(session).create_running(
+            agent_type="backtest_review",
+            symbol="000001",
+            model_name="fake-llm",
+            request_payload="{}",
+            job_run_id=None,
+            started_at=datetime(2026, 6, 24, 9, 2, 0),
+        )
+        review_row = AgentCandidateReviewRepository(session).get(review.id)
+        assert review_row is not None
+        AgentCandidateReviewRepository(session).mark_review_succeeded(
+            review_row,
+            review_agent_run_id=agent_run.id,
+            updated_at=datetime(2026, 6, 24, 9, 2, 1),
+        )
+
+    with pytest.raises(
+        CandidateReviewConflictError,
+        match="candidate review is not waiting for backtest refresh",
+    ):
+        refresh_candidate_backtest_status(engine, review.id)
+
+    with session_scope(engine) as session:
+        review_row = AgentCandidateReviewRepository(session).get(review.id)
+        assert review_row is not None
+        assert review_row.status == "review_succeeded"
+        assert review_row.backtest_run_id == review.backtest_run_id
+        assert review_row.review_agent_run_id == agent_run.id
 
 
 def test_duplicate_approval_conflicts_and_submits_no_second_job(legacy_sqlite_db):

@@ -257,6 +257,10 @@ def refresh_candidate_backtest_status(
         review = review_repo.get(candidate_review_id)
         if review is None:
             raise CandidateReviewNotFoundError("candidate review not found")
+        if review.status != STATUS_BACKTEST_SUBMITTED:
+            raise CandidateReviewConflictError(
+                "candidate review is not waiting for backtest refresh"
+            )
         if review.backtest_job_run_id is None:
             raise CandidateReviewConflictError("candidate has no linked backtest job")
 

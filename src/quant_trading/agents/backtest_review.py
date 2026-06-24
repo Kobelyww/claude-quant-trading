@@ -24,16 +24,22 @@ ALLOWED_PAPER_TRADING_READINESS = {
     "ready_for_paper_research",
 }
 _SUMMARY_LIMIT = 500
+_LIST_LIMIT = 20
 _SAFE_MANUAL_REVIEW_STEP = (
     "review the backtest output manually before any further research action"
 )
 _UNSAFE_TEXT_PATTERNS = (
-    re.compile(r"\b(?:buy|sell)\b", re.IGNORECASE),
-    re.compile(r"\bpaper\s+(?:trading|trade|run|runs)\b", re.IGNORECASE),
-    re.compile(r"\b(?:broker|brokers|exchange|exchanges)\b", re.IGNORECASE),
+    re.compile(r"\b(?:buy|buying|sell|selling)\b", re.IGNORECASE),
+    re.compile(r"\bpaper[-\s]+(?:trading|trade|run|runs)\b", re.IGNORECASE),
+    re.compile(r"\b(?:broker|brokers|brokerage|exchange|exchanges)\b", re.IGNORECASE),
     re.compile(
         r"\b(?:submit|place|send|create|execute)\b.{0,40}\b"
         r"(?:order|orders|market\s+order|market\s+orders)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:submit|place|send|create|execute)\b.{0,40}\b"
+        r"(?:trade|trades|trading)\b",
         re.IGNORECASE,
     ),
     re.compile(
@@ -41,7 +47,11 @@ _UNSAFE_TEXT_PATTERNS = (
         r"(?:submit|place|send|create|execute)\b",
         re.IGNORECASE,
     ),
-    re.compile(r"\blive\s+(?:trading|order|orders|market\s+order|market\s+orders)\b", re.IGNORECASE),
+    re.compile(
+        r"\blive\s+"
+        r"(?:trade|trades|trading|order|orders|market\s+order|market\s+orders)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bmarket\s+orders?\b", re.IGNORECASE),
 )
 
@@ -263,16 +273,21 @@ def _fallback_review(
     candidate_review_id: int,
     backtest_run_id: int,
 ) -> dict[str, Any]:
+    unsafe = _contains_unsafe_text([content])
     return {
         "candidate_review_id": candidate_review_id,
         "backtest_run_id": backtest_run_id,
         "review_status": "needs_review",
         "research_only": True,
-        "summary": _bounded_summary(content),
+        "summary": (
+            "unstructured review output contained unsafe trading instruction text"
+            if unsafe
+            else _bounded_summary(content)
+        ),
         "risk_flags": ["unstructured_review_output"],
         "overfit_warnings": [],
         "paper_trading_readiness": "needs_review",
-        "recommended_next_steps": [],
+        "recommended_next_steps": [_SAFE_MANUAL_REVIEW_STEP],
     }
 
 
@@ -335,6 +350,8 @@ def _string_list(value: Any) -> list[str]:
             cleaned = str(item).strip()
         if cleaned:
             result.append(cleaned[:200])
+        if len(result) >= _LIST_LIMIT:
+            break
     return result
 
 

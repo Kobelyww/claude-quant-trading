@@ -149,9 +149,16 @@ def test_parse_backtest_review_response_sanitizes_dangerous_structured_text():
     [
         "buy",
         "sell.",
+        "buying",
+        "selling",
         "create a paper trading run",
+        "paper-trading is ready",
         "submit market orders after review",
         "live market order after review",
+        "live trade after review",
+        "execute trade now",
+        "place trade tomorrow",
+        "connect brokerage account",
     ],
 )
 def test_parse_backtest_review_response_sanitizes_unsafe_text_variants(unsafe_text):
@@ -181,6 +188,32 @@ def test_parse_backtest_review_response_sanitizes_unsafe_text_variants(unsafe_te
     assert parsed["paper_trading_readiness"] == "needs_review"
     assert parsed["research_only"] is True
     assert unsafe_text_lower not in serialized_fields
+
+
+@pytest.mark.parametrize(
+    "unsafe_text",
+    [
+        "buy 000001 now",
+        "execute trade now",
+        "connect brokerage account",
+    ],
+)
+def test_parse_backtest_review_response_sanitizes_unsafe_fallback_content(unsafe_text):
+    parsed = parse_backtest_review_response(
+        unsafe_text,
+        candidate_review_id=7,
+        backtest_run_id=11,
+    )
+
+    serialized = json.dumps(parsed, ensure_ascii=False).lower()
+    assert parsed["review_status"] == "needs_review"
+    assert parsed["research_only"] is True
+    assert parsed["paper_trading_readiness"] == "needs_review"
+    assert parsed["summary"] == "unstructured review output contained unsafe trading instruction text"
+    assert parsed["recommended_next_steps"] == [
+        "review the backtest output manually before any further research action"
+    ]
+    assert unsafe_text.lower() not in serialized
 
 
 @pytest.mark.parametrize(
@@ -237,7 +270,9 @@ def test_parse_backtest_review_response_falls_back_for_unstructured_content():
     assert parsed["risk_flags"] == ["unstructured_review_output"]
     assert parsed["overfit_warnings"] == []
     assert parsed["paper_trading_readiness"] == "needs_review"
-    assert parsed["recommended_next_steps"] == []
+    assert parsed["recommended_next_steps"] == [
+        "review the backtest output manually before any further research action"
+    ]
     assert len(parsed["summary"]) <= 500
 
 
@@ -251,6 +286,29 @@ def test_parse_backtest_review_response_falls_back_for_non_dict_json():
     assert parsed["review_status"] == "needs_review"
     assert parsed["risk_flags"] == ["unstructured_review_output"]
     assert parsed["paper_trading_readiness"] == "needs_review"
+
+
+def test_parse_backtest_review_response_caps_structured_list_lengths():
+    parsed = parse_backtest_review_response(
+        json.dumps(
+            {
+                "summary": "Many diagnostics.",
+                "risk_flags": [f"risk_{index}" for index in range(25)],
+                "overfit_warnings": [f"warning_{index}" for index in range(25)],
+                "paper_trading_readiness": "needs_review",
+                "recommended_next_steps": [f"research_step_{index}" for index in range(25)],
+            }
+        ),
+        candidate_review_id=7,
+        backtest_run_id=11,
+    )
+
+    assert parsed["review_status"] == "completed"
+    assert len(parsed["risk_flags"]) == 20
+    assert len(parsed["overfit_warnings"]) == 20
+    assert len(parsed["recommended_next_steps"]) == 20
+    assert parsed["risk_flags"][-1] == "risk_19"
+    assert parsed["recommended_next_steps"][-1] == "research_step_19"
 
 
 def test_load_backtest_review_context_reads_review_source_run_backtest_and_metrics():

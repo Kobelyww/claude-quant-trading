@@ -5,16 +5,16 @@ from decimal import Decimal
 import json
 from typing import Any, Callable
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
 
 from quant_trading.agents.candidates import BACKTEST_MA_CROSS, STATUS_PASSED
 from quant_trading.agents.models import AGENT_STRATEGY_IDEA
 from quant_trading.config import AppSettings
 from quant_trading.jobs.queue import make_queue
-from quant_trading.jobs.runtime import utcnow
+from quant_trading.jobs.runtime import job_payload_dumps, utcnow
 from quant_trading.jobs.service import QueueLike, submit_job_run
 from quant_trading.storage.db import session_scope
-from quant_trading.storage.models import AgentCandidateReviewORM
+from quant_trading.storage.models import AgentCandidateReviewORM, JobRunORM
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
     AgentRunRepository,
@@ -144,21 +144,31 @@ def approve_strategy_candidate(
         )
         review_id = review.id
 
+    backtest_payload = backtest_request["payload"]
+    submitted_after = _now()
+    request_payload_text = job_payload_dumps(backtest_payload)
     captured_queue_factory = _JobRunIdCaptureQueueFactory(queue_factory)
     try:
         job = submit_job_run(
             engine,
             settings,
             BACKTEST_MA_CROSS,
-            backtest_request["payload"],
+            backtest_payload,
             captured_queue_factory,
         )
     except Exception as exc:
+        backtest_job_run_id = captured_queue_factory.job_run_id
+        if backtest_job_run_id is None:
+            backtest_job_run_id = _find_recent_queued_backtest_job_id(
+                engine,
+                request_payload_text=request_payload_text,
+                submitted_after=submitted_after,
+            )
         return _mark_submit_failed(
             engine,
             review_id,
             str(exc),
-            backtest_job_run_id=captured_queue_factory.job_run_id,
+            backtest_job_run_id=backtest_job_run_id,
         )
 
     with session_scope(engine) as session:
@@ -313,6 +323,27 @@ def _mark_submit_failed(
         )
         session.expunge(review)
         return review
+
+
+def _find_recent_queued_backtest_job_id(
+    engine: Engine,
+    *,
+    request_payload_text: str,
+    submitted_after: datetime,
+) -> int | None:
+    with session_scope(engine) as session:
+        row = session.scalar(
+            select(JobRunORM)
+            .where(
+                JobRunORM.job_type == BACKTEST_MA_CROSS,
+                JobRunORM.status == "queued",
+                JobRunORM.request_payload == request_payload_text,
+                JobRunORM.queued_at >= submitted_after,
+            )
+            .order_by(JobRunORM.id.desc())
+            .limit(1)
+        )
+        return row.id if row is not None else None
 
 
 def _raise_approval_conflict(status: str) -> None:

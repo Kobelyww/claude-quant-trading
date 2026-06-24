@@ -252,6 +252,40 @@ def test_rq_enqueue_failure_marks_review_and_created_job_failed_without_orphan()
     assert counts["broker_events"] == 0
 
 
+def test_rq_queue_factory_failure_recovers_created_job_without_orphan():
+    def failing_queue_factory(redis_url):
+        raise RuntimeError("rq factory unavailable")
+
+    engine = _create_engine()
+    source_id = _create_source_agent_run(engine)
+
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved for async backtest",
+        settings=_rq_settings(),
+        queue_factory=failing_queue_factory,
+    )
+
+    assert review.status == "backtest_failed"
+    assert review.backtest_job_run_id is not None
+    assert review.backtest_run_id is None
+    assert review.error_message == "rq factory unavailable"
+    with session_scope(engine) as session:
+        job = session.get(JobRunORM, review.backtest_job_run_id)
+        assert job is not None
+        assert job.status == "failed"
+        assert job.error_message == "rq factory unavailable"
+        orphaned_queued_jobs = session.scalars(
+            select(JobRunORM).where(
+                JobRunORM.job_type == BACKTEST_MA_CROSS,
+                JobRunORM.status == "queued",
+            )
+        ).all()
+        assert orphaned_queued_jobs == []
+
+
 def test_duplicate_approval_conflicts_and_submits_no_second_job(legacy_sqlite_db):
     engine = _create_engine()
     import_legacy_sqlite(legacy_sqlite_db, engine)

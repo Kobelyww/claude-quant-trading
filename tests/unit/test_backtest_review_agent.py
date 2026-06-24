@@ -159,6 +159,11 @@ def test_parse_backtest_review_response_sanitizes_dangerous_structured_text():
         "execute trade now",
         "place trade tomorrow",
         "connect brokerage account",
+        "This guarantees future profitability",
+        "guaranteed profit",
+        "```python\nprint('trade')\n```",
+        "def strategy(): pass",
+        "executable code",
     ],
 )
 def test_parse_backtest_review_response_sanitizes_unsafe_text_variants(unsafe_text):
@@ -196,6 +201,11 @@ def test_parse_backtest_review_response_sanitizes_unsafe_text_variants(unsafe_te
         "buy 000001 now",
         "execute trade now",
         "connect brokerage account",
+        "This guarantees future profitability",
+        "guaranteed profit",
+        "```python\nprint('trade')\n```",
+        "def strategy(): pass",
+        "executable code",
     ],
 )
 def test_parse_backtest_review_response_sanitizes_unsafe_fallback_content(unsafe_text):

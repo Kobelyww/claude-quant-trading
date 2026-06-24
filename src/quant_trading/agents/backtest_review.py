@@ -53,6 +53,20 @@ _UNSAFE_TEXT_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"\bmarket\s+orders?\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:guarantee|guarantees|guaranteed|guaranteeing)\b.{0,40}\b"
+        r"(?:profit|profits|profitability|return|returns|gain|gains)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:future|guaranteed)\b.{0,40}\b"
+        r"(?:profit|profits|profitability|return|returns|gain|gains)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"```", re.IGNORECASE),
+    re.compile(r"\bdef\s+\w+\s*\(", re.IGNORECASE),
+    re.compile(r"\b(?:executable|generated)\s+code\b", re.IGNORECASE),
+    re.compile(r"\bcode\s+(?:block|snippet)\b", re.IGNORECASE),
 )
 
 

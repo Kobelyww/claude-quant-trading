@@ -127,5 +127,5 @@ def _raise_candidate_review_http_error(exc: Exception) -> NoReturn:
     if isinstance(exc, CandidateReviewConflictError):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, CandidateReviewValidationError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     raise HTTPException(status_code=400, detail=str(exc)) from exc

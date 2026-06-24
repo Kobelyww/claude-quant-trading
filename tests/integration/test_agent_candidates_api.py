@@ -87,6 +87,27 @@ def _create_source_agent_run(engine) -> int:
         return row.id
 
 
+def _create_source_agent_run_with_result(engine, result_payload: dict) -> int:
+    with session_scope(engine) as session:
+        repo = AgentRunRepository(session)
+        row = repo.create_running(
+            agent_type=AGENT_STRATEGY_IDEA,
+            symbol="000001",
+            model_name="fake-llm",
+            request_payload="{}",
+            job_run_id=None,
+            started_at=datetime(2026, 6, 24, 9, 0, 0),
+        )
+        repo.mark_succeeded(
+            row,
+            metrics_payload="{}",
+            result_payload=json.dumps(result_payload, sort_keys=True),
+            finished_at=datetime(2026, 6, 24, 9, 0, 1),
+            duration_ms=1,
+        )
+        return row.id
+
+
 def _counts(engine):
     with session_scope(engine) as session:
         return {
@@ -202,6 +223,32 @@ def test_refresh_backtest_endpoint_for_incomplete_queued_job_returns_conflict():
     assert refresh_response.status_code == 409
     assert refresh_response.json() == {
         "detail": "linked backtest job has not completed",
+    }
+
+
+def test_approval_endpoint_maps_candidate_validation_failure_to_conflict():
+    engine = _create_engine()
+    source_id = _create_source_agent_run_with_result(
+        engine,
+        {
+            **_candidate_result(),
+            "validation_status": "failed",
+        },
+    )
+    client = _client(engine)
+
+    response = client.post(
+        f"/agent-candidates/{source_id}/approve",
+        json={"operator": "research lead", "note": "approve"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "candidate validation did not pass"
+    assert _counts(engine) == {
+        "jobs": 0,
+        "backtests": 0,
+        "papers": 0,
+        "broker_events": 0,
     }
 
 

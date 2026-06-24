@@ -17,7 +17,6 @@ from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
 from quant_trading.storage.models import (
     AgentCandidateReviewORM,
-    AgentRunORM,
     BacktestRunORM,
     BrokerOrderEventORM,
     JobRunORM,
@@ -28,6 +27,10 @@ from quant_trading.storage.repositories import AgentRunRepository
 
 def _settings() -> AppSettings:
     return AppSettings(job_executor="inline")
+
+
+def _rq_settings() -> AppSettings:
+    return AppSettings(job_executor="rq", redis_url="redis://example.invalid:6379/0")
 
 
 def _create_engine():
@@ -87,6 +90,7 @@ def _create_source_agent_run(
     agent_type=AGENT_STRATEGY_IDEA,
     status="succeeded",
     result_payload=None,
+    raw_result_payload=None,
 ) -> int:
     with session_scope(engine) as session:
         repo = AgentRunRepository(session)
@@ -102,7 +106,9 @@ def _create_source_agent_run(
             repo.mark_succeeded(
                 row,
                 metrics_payload="{}",
-                result_payload=json.dumps(
+                result_payload=raw_result_payload
+                if raw_result_payload is not None
+                else json.dumps(
                     result_payload if result_payload is not None else _candidate_result(),
                     sort_keys=True,
                 ),
@@ -165,6 +171,9 @@ def test_approving_valid_strategy_candidate_submits_backtest_and_links_inline_re
             "backtest_request_payload"
         ]["payload"]
         assert json.loads(job.result_payload)["run_id"] == review.backtest_run_id
+    counts = _counts(engine)
+    assert counts["papers"] == 0
+    assert counts["broker_events"] == 0
 
 
 def test_approving_with_missing_market_data_records_backtest_failure():
@@ -189,6 +198,46 @@ def test_approving_with_missing_market_data_records_backtest_failure():
         job = session.get(JobRunORM, review.backtest_job_run_id)
         assert job is not None
         assert job.status == "failed"
+    counts = _counts(engine)
+    assert counts["papers"] == 0
+    assert counts["broker_events"] == 0
+
+
+def test_rq_enqueue_failure_marks_review_backtest_failed_without_linked_job():
+    class FailingQueue:
+        def enqueue(self, func, *args):
+            raise RuntimeError("rq enqueue unavailable")
+
+    engine = _create_engine()
+    source_id = _create_source_agent_run(engine)
+
+    review = approve_strategy_candidate(
+        engine,
+        source_id,
+        operator="research lead",
+        note="approved for async backtest",
+        settings=_rq_settings(),
+        queue_factory=lambda redis_url: FailingQueue(),
+    )
+
+    assert review.status == "backtest_failed"
+    assert review.backtest_job_run_id is None
+    assert review.backtest_run_id is None
+    assert review.error_message == "rq enqueue unavailable"
+    with pytest.raises(CandidateReviewConflictError, match="candidate already submitted"):
+        approve_strategy_candidate(
+            engine,
+            source_id,
+            operator="research lead",
+            note="retry",
+            settings=_rq_settings(),
+            queue_factory=lambda redis_url: FailingQueue(),
+        )
+    counts = _counts(engine)
+    assert counts["reviews"] == 1
+    assert counts["jobs"] == 1
+    assert counts["papers"] == 0
+    assert counts["broker_events"] == 0
 
 
 def test_duplicate_approval_conflicts_and_submits_no_second_job(legacy_sqlite_db):
@@ -341,6 +390,27 @@ def test_invalid_approval_source_cases_create_no_review_or_job(
     )
 
     with pytest.raises(CandidateReviewValidationError, match=message):
+        approve_strategy_candidate(
+            engine,
+            source_id,
+            operator="research lead",
+            note="approve",
+            settings=_settings(),
+        )
+
+    counts = _counts(engine)
+    assert counts["reviews"] == 0
+    assert counts["jobs"] == 0
+
+
+def test_malformed_source_result_payload_raises_validation_error_without_review_or_job():
+    engine = _create_engine()
+    source_id = _create_source_agent_run(
+        engine,
+        raw_result_payload='{"parsed": true',
+    )
+
+    with pytest.raises(CandidateReviewValidationError, match="invalid JSON payload"):
         approve_strategy_candidate(
             engine,
             source_id,

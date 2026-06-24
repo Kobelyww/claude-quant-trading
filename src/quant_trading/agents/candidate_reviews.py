@@ -116,13 +116,16 @@ def approve_strategy_candidate(
         )
         review_id = review.id
 
-    job = submit_job_run(
-        engine,
-        settings,
-        BACKTEST_MA_CROSS,
-        backtest_request["payload"],
-        queue_factory,
-    )
+    try:
+        job = submit_job_run(
+            engine,
+            settings,
+            BACKTEST_MA_CROSS,
+            backtest_request["payload"],
+            queue_factory,
+        )
+    except Exception as exc:
+        return _mark_submit_failed(engine, review_id, str(exc))
 
     with session_scope(engine) as session:
         review_repo = AgentCandidateReviewRepository(session)
@@ -143,6 +146,12 @@ def approve_strategy_candidate(
                 review_repo.mark_backtest_succeeded(
                     review,
                     backtest_run_id=run_id,
+                    updated_at=_now(),
+                )
+            else:
+                review_repo.mark_backtest_failed(
+                    review,
+                    error_message="backtest job did not return run_id",
                     updated_at=_now(),
                 )
         elif job_row is not None and job_row.status == "failed":
@@ -209,7 +218,7 @@ def _validate_source_agent_run(source) -> tuple[dict[str, Any], dict[str, Any]]:
     if source.status != "succeeded":
         raise CandidateReviewValidationError("source agent run has not succeeded")
 
-    result_payload = _json_loads(source.result_payload)
+    result_payload = _strict_json_loads(source.result_payload)
     if result_payload.get("parsed") is not True:
         raise CandidateReviewValidationError("strategy candidate was not parsed")
     if result_payload.get("validation_status") != STATUS_PASSED:
@@ -230,6 +239,26 @@ def _validate_source_agent_run(source) -> tuple[dict[str, Any], dict[str, Any]]:
     _required_text(candidate_payload.get("symbol"), "missing candidate symbol")
     _required_text(candidate_payload.get("strategy_name"), "missing candidate strategy name")
     return candidate_payload, backtest_request_payload
+
+
+def _mark_submit_failed(
+    engine: Engine,
+    review_id: int,
+    error_message: str,
+) -> AgentCandidateReviewORM:
+    with session_scope(engine) as session:
+        review = AgentCandidateReviewRepository(session).get(review_id)
+        if review is None:
+            raise CandidateReviewNotFoundError("candidate review not found")
+        AgentCandidateReviewRepository(session).mark_backtest_failed(
+            review,
+            error_message=(error_message or "backtest submission failed")[
+                :_MAX_ERROR_LENGTH
+            ],
+            updated_at=_now(),
+        )
+        session.expunge(review)
+        return review
 
 
 def _raise_approval_conflict(status: str) -> None:
@@ -272,8 +301,23 @@ def _json_dumps(value: dict[str, Any]) -> str:
 def _json_loads(value: str | None) -> dict[str, Any]:
     if not value:
         return {}
-    parsed = json.loads(value)
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _strict_json_loads(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise CandidateReviewValidationError("invalid JSON payload") from exc
+    if not isinstance(parsed, dict):
+        raise CandidateReviewValidationError("invalid JSON payload")
+    return parsed
 
 
 def _json_default(value: Any) -> str:

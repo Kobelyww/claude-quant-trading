@@ -337,10 +337,16 @@ status, imported bar count, linked job id, and capped error text. Tests use fake
 real local AkShare sync requires installing the optional `.[data]` dependencies. This still does
 not place broker or exchange orders.
 
-## Quant Agent v1
+## Quant Agent
 
-Quant Agent v1 adds audited research agents for market analysis and strategy idea structuring.
+Quant Agent adds audited research agents for market analysis and strategy idea structuring.
 Agents run through the existing job runtime and store business-level audit rows in `agent_runs`.
+
+Strategy idea jobs now validate parsed LLM specs as research candidates. V2 supports only the
+existing `ma_cross` template and produces a suggested `backtest_ma_cross` request payload when the
+spec is complete, safe, and mapped to the whitelist. The request payload is a suggestion only:
+operators must submit any backtest explicitly through `/jobs/backtests/ma-cross` or
+`/workflows/backtests/ma-cross`.
 
 Create a market analysis job:
 
@@ -357,6 +363,11 @@ curl -X POST http://127.0.0.1:8000/jobs/agents/strategy-idea \
   -H "Content-Type: application/json" \
   -d '{"idea":"Use moving-average pullbacks to structure a long-only trend research strategy.","symbol":"000001"}'
 ```
+
+When validation passes, the job result includes `validation_status="passed"`,
+`candidate_payload.strategy_name="ma_cross"`, and a `backtest_request_payload` shaped for the
+existing MA Cross backtest job. When validation fails or needs review, candidate and backtest
+request payloads are `null` while the agent run remains auditable.
 
 Inspect agent runs:
 
@@ -376,8 +387,9 @@ Agent jobs require:
 | `QUANT_AGENT_RESULT_MAX_CHARS` | `12000` | Maximum LLM result characters persisted by agent services. |
 
 Agent outputs are research-only. They do not place orders, call broker adapters, approve strategies,
-execute generated code, start paper runs, or provide buy/sell instructions. Strategy-code generation
-and automatic trading are intentionally outside v1.
+execute generated code, start paper runs, submit backtests automatically, or provide buy/sell
+instructions. Strategy-code generation and automatic trading are intentionally outside this
+milestone. Candidate payloads always require human approval.
 
 ## Job Tasks
 

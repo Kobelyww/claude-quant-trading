@@ -493,6 +493,13 @@ def _determine_status(
     reasons: list[dict[str, Any]] = []
     if data_quality_status == "failed":
         reasons.append({"code": "data_quality_failed", "status": data_quality_status})
+    elif data_quality_status != "passed":
+        reason_code = (
+            "data_quality_needs_review"
+            if data_quality_status == "needs_review"
+            else "data_quality_not_passed"
+        )
+        reasons.append({"code": reason_code, "status": data_quality_status})
 
     oos_return = _decimal(out_of_sample_metrics.get("return_pct"))
     if oos_return < Decimal("0"):
@@ -595,6 +602,8 @@ def _determine_status(
 
     if any(reason["code"] == "data_quality_failed" for reason in reasons):
         return "failed", "not_ready", reasons
+    if any(reason["code"].startswith("data_quality_") for reason in reasons):
+        return "needs_review", "not_ready", reasons
     if not reasons:
         return "passed", "ready_for_paper_research", reasons
     if all(reason["code"] == "benchmark_underperformance" for reason in reasons):

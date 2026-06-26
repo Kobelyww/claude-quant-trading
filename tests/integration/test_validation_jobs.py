@@ -460,6 +460,40 @@ def test_determine_status_benchmark_underperformance_caps_to_needs_review():
     assert {reason["code"] for reason in reasons} == {"benchmark_underperformance"}
 
 
+def test_determine_status_data_quality_needs_review_caps_to_not_ready():
+    validation_status, readiness_floor, reasons = _determine_status(
+        data_quality_status="needs_review",
+        out_of_sample_metrics={
+            "return_pct": "4.0",
+            "max_drawdown": "0.10",
+        },
+        walk_forward_payload={
+            "windows": [
+                {"return_pct": "1.0"},
+                {"return_pct": "1.0"},
+            ],
+            "failures": 0,
+        },
+        parameter_sensitivity_payload={
+            "runs": [
+                {"short_window": 3, "long_window": 15, "return_pct": "1.0"},
+                {"short_window": 5, "long_window": 20, "return_pct": "1.0"},
+                {"short_window": 7, "long_window": 25, "return_pct": "1.0"},
+            ]
+        },
+        benchmark_payload={
+            "strategy_return_pct": "4.0",
+            "benchmark_return_pct": "4.0",
+        },
+        short_window=5,
+        long_window=20,
+    )
+
+    assert validation_status == "needs_review"
+    assert readiness_floor == "not_ready"
+    assert {reason["code"] for reason in reasons} == {"data_quality_needs_review"}
+
+
 def test_data_quality_report_job_api_persists_report():
     engine = _create_engine()
     candidate_review_id, backtest_run_id = _seed_passing_validation_candidate(engine)

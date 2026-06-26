@@ -5,7 +5,7 @@ import json
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
-from quant_trading.core.enums import Market
+from quant_trading.core.enums import Adjustment, Market
 from quant_trading.core.models import Bar
 from quant_trading.execution.broker import BrokerOrderRequest, BrokerOrderResult
 from quant_trading.storage.models import (
@@ -166,13 +166,30 @@ class MarketDataRepository:
         self.session.flush()
         return row
 
-    def list_bars(self, symbol: str) -> list[Bar]:
-        rows = self.session.scalars(
+    def list_bars(
+        self,
+        symbol: str,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+        source: str | None = None,
+        adjusted: str | None = None,
+    ) -> list[Bar]:
+        statement = (
             select(MarketBarORM)
             .join(InstrumentORM)
             .where(InstrumentORM.symbol == symbol)
             .order_by(MarketBarORM.timestamp)
-        ).all()
+        )
+        if start is not None:
+            statement = statement.where(MarketBarORM.timestamp >= start)
+        if end is not None:
+            statement = statement.where(MarketBarORM.timestamp <= end)
+        if source:
+            statement = statement.where(MarketBarORM.source == source)
+        if adjusted:
+            statement = statement.where(MarketBarORM.adjusted == adjusted)
+        rows = self.session.scalars(statement).all()
         return [
             Bar(
                 instrument_id=row.instrument_id,
@@ -185,7 +202,7 @@ class MarketDataRepository:
                 close=row.close,
                 volume=row.volume,
                 source=row.source,
-                adjusted=row.adjusted,
+                adjusted=Adjustment(row.adjusted),
             )
             for row in rows
         ]

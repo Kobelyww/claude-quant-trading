@@ -87,6 +87,10 @@ http://localhost:8000/agent-candidates/{candidate_review_id}
 http://localhost:8000/agent-candidates/{agent_run_id}/approve
 http://localhost:8000/agent-candidates/{agent_run_id}/reject
 http://localhost:8000/agent-candidates/{candidate_review_id}/refresh-backtest
+http://localhost:8000/data-quality-reports
+http://localhost:8000/data-quality-reports/{report_id}
+http://localhost:8000/research-validation-reports
+http://localhost:8000/research-validation-reports/{report_id}
 http://localhost:8000/workflows/import-legacy
 http://localhost:8000/workflows/backtests/ma-cross
 http://localhost:8000/workflows/paper/accounts
@@ -105,6 +109,8 @@ http://localhost:8000/jobs/market-data/sync
 http://localhost:8000/jobs/agents/market-analysis
 http://localhost:8000/jobs/agents/strategy-idea
 http://localhost:8000/jobs/agents/backtest-review
+http://localhost:8000/jobs/data-quality/report
+http://localhost:8000/jobs/validation/research
 http://localhost:8000/job-schedules
 http://localhost:8000/job-schedules/run-due
 http://localhost:8000/job-schedules/{schedule_id}
@@ -451,6 +457,44 @@ curl -X POST http://127.0.0.1:8000/jobs/agents/backtest-review \
 
 The request also accepts `backtest_run_id` when the caller wants to be explicit, but it must match
 the candidate review's linked backtest run.
+
+### Quant Agent v4: research validation and data quality
+
+V4 adds deterministic evidence gates before `backtest_review` can make a research
+readiness recommendation by default:
+
+```text
+candidate approval -> in-sample backtest -> data quality report -> research validation report -> backtest_review
+```
+
+Create a data quality report job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/data-quality/report \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"000001","candidate_review_id":1,"backtest_run_id":1}'
+```
+
+Create a research validation job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/validation/research \
+  -H "Content-Type: application/json" \
+  -d '{"candidate_review_id":1}'
+```
+
+Read reports:
+
+```bash
+curl http://127.0.0.1:8000/data-quality-reports
+curl http://127.0.0.1:8000/research-validation-reports
+```
+
+Backtest review jobs require a linked validation report by default. The request accepts
+`require_validation_report=false` only for explicit legacy local research.
+
+Validation output remains research-only. It does not create paper runs, approve paper
+trading, call broker adapters, place orders, or execute generated code.
 
 ## Job Tasks
 

@@ -132,8 +132,9 @@ def test_buy_and_hold_benchmark_returns_metrics_without_persisting_orders():
     assert metrics["start"] == "2026-01-01"
     assert metrics["end"] == "2026-01-02"
     assert metrics["initial_cash"] == "100000.000000"
-    assert Decimal(metrics["final_equity"]) > Decimal("100000")
-    assert Decimal(metrics["return_pct"]) > Decimal("0")
+    assert metrics["final_equity"] == "119688.377792"
+    assert metrics["absolute_pnl"] == "19688.377792"
+    assert metrics["return_pct"] == "19.688378"
     assert metrics["order_count"] == 0
     assert metrics["fill_count"] == 0
     assert order_count == 0
@@ -148,3 +149,56 @@ def test_buy_and_hold_benchmark_returns_metrics_without_persisting_orders():
     assert zero_cash_metrics["final_equity"] == "0.000000"
     assert zero_cash_metrics["absolute_pnl"] == "0.000000"
     assert zero_cash_metrics["return_pct"] == "0.000000"
+
+
+def test_buy_and_hold_benchmark_preserves_cash_when_no_bars():
+    metrics = buy_and_hold_benchmark(
+        [],
+        initial_cash=Decimal("100000"),
+        commission_rate=Decimal("0.0003"),
+        slippage_rate=Decimal("0.001"),
+    )
+
+    assert metrics["bar_count"] == 0
+    assert metrics["final_equity"] == "100000.000000"
+    assert metrics["absolute_pnl"] == "0.000000"
+    assert metrics["return_pct"] == "0.000000"
+
+
+def test_buy_and_hold_benchmark_flat_prices_reflects_costs():
+    bars = [
+        Bar(
+            instrument_id=1,
+            symbol="000001",
+            market=Market.A_STOCK,
+            timestamp=date(2026, 1, 1),
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=Decimal("1000"),
+        ),
+        Bar(
+            instrument_id=1,
+            symbol="000001",
+            market=Market.A_STOCK,
+            timestamp=date(2026, 1, 2),
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=Decimal("1000"),
+        ),
+    ]
+
+    metrics = buy_and_hold_benchmark(
+        bars,
+        initial_cash=Decimal("100000"),
+        commission_rate=Decimal("0.0003"),
+        slippage_rate=Decimal("0.001"),
+    )
+
+    assert metrics["final_equity"] == "99740.338000"
+    assert metrics["absolute_pnl"] == "-259.662000"
+    assert metrics["return_pct"] == "-0.259662"
+    assert metrics["max_drawdown"] == "0.000000"

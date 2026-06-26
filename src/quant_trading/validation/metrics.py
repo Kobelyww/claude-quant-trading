@@ -82,7 +82,9 @@ def buy_and_hold_benchmark(
     commission_rate: Decimal,
     slippage_rate: Decimal,
 ) -> dict[str, Any]:
-    if not bars or initial_cash <= Decimal("0"):
+    if not bars:
+        return _neutral_benchmark_payload(bars, initial_cash=initial_cash)
+    if initial_cash <= Decimal("0"):
         return _zero_benchmark_payload(bars, initial_cash=initial_cash)
 
     entry_price = bars[0].close * (Decimal("1") + slippage_rate)
@@ -135,6 +137,19 @@ def _benchmark_payload(
         "order_count": 0,
         "fill_count": 0,
     }
+
+
+def _neutral_benchmark_payload(
+    bars: list[Bar],
+    *,
+    initial_cash: Decimal,
+) -> dict[str, Any]:
+    return _benchmark_payload(
+        bars,
+        initial_cash=initial_cash,
+        final_equity=initial_cash,
+        max_drawdown=Decimal("0"),
+    )
 
 
 def _zero_benchmark_payload(bars: list[Bar], *, initial_cash: Decimal) -> dict[str, Any]:

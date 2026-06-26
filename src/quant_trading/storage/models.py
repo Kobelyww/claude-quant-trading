@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -570,6 +571,14 @@ class OperatorApprovalRequestORM(Base):
             "ix_operator_approval_requests_resource",
             "resource_type",
             "resource_id",
+        ),
+        Index(
+            "uq_operator_approval_requests_pending_resource",
+            "resource_type",
+            "resource_id",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+            postgresql_where=text("status = 'pending'"),
         ),
     )
 

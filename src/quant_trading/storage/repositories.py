@@ -3,6 +3,7 @@ from decimal import Decimal
 import json
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from quant_trading.core.enums import Adjustment, Market
@@ -46,6 +47,80 @@ def _json_dumps(value: dict) -> str:
 
 def _cap_text(value: str, limit: int) -> str:
     return value[:limit]
+
+
+_REDACTED = "[REDACTED]"
+_TRUNCATED = "[TRUNCATED]"
+_SECRET_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "access_key",
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "credential",
+    "private_key",
+)
+_SECRET_VALUE_MARKERS = (
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "apikey",
+    "api_key",
+)
+_OPS_PAYLOAD_MAX_LENGTH = 4096
+_OPS_STRING_MAX_LENGTH = 512
+
+
+def _is_secret_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    return any(part in normalized for part in _SECRET_KEY_PARTS)
+
+
+def _is_secret_value(value: str) -> bool:
+    normalized = value.lower()
+    return any(marker in normalized for marker in _SECRET_VALUE_MARKERS)
+
+
+def _sanitize_json_value(value, *, secret_context: bool = False):
+    if secret_context:
+        return _REDACTED
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_json_value(
+                item,
+                secret_context=_is_secret_key(str(key)),
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, str) and _is_secret_value(value):
+        return _REDACTED
+    if isinstance(value, str) and len(value) > _OPS_STRING_MAX_LENGTH:
+        return value[:_OPS_STRING_MAX_LENGTH] + _TRUNCATED
+    return value
+
+
+def _ops_json_dumps(value: dict, limit: int = _OPS_PAYLOAD_MAX_LENGTH) -> str:
+    payload = _sanitize_json_value(value)
+    dumped = _json_dumps(payload)
+    if len(dumped) <= limit:
+        return dumped
+
+    bounded = {
+        "truncated": True,
+        "payload_preview": dumped[: max(0, limit - 64)],
+        "truncated_marker": _TRUNCATED,
+    }
+    bounded_dumped = _json_dumps(bounded)
+    if len(bounded_dumped) <= limit:
+        return bounded_dumped
+    return _json_dumps({"truncated": True, "truncated_marker": _TRUNCATED})[:limit]
 
 
 def _broker_request_payload(request: BrokerOrderRequest) -> dict:
@@ -1291,6 +1366,77 @@ def _normalize_decimal(value) -> Decimal | None:
     return Decimal(str(value)).quantize(Decimal("0.000001"))
 
 
+def _order_intent_comparison_payload(
+    *,
+    source_type: str,
+    source_id: int | None,
+    paper_run_id: int | None,
+    paper_order_id: int | None,
+    client_order_id: str,
+    symbol: str,
+    instrument_id: int,
+    side: str,
+    order_type: str,
+    quantity: int,
+    limit_price,
+    estimated_price,
+    estimated_notional,
+    broker_mode: str,
+    risk_profile_name: str,
+    risk_summary_payload: str,
+    approval_required: bool,
+) -> dict:
+    return {
+        "source_type": source_type,
+        "source_id": source_id,
+        "paper_run_id": paper_run_id,
+        "paper_order_id": paper_order_id,
+        "client_order_id": client_order_id,
+        "symbol": symbol,
+        "instrument_id": instrument_id,
+        "side": side,
+        "order_type": order_type,
+        "quantity": quantity,
+        "limit_price": _normalize_decimal(limit_price),
+        "estimated_price": _normalize_decimal(estimated_price),
+        "estimated_notional": _normalize_decimal(estimated_notional),
+        "broker_mode": broker_mode,
+        "risk_profile_name": risk_profile_name,
+        "risk_summary_payload": json.loads(risk_summary_payload),
+        "approval_required": approval_required,
+    }
+
+
+def _order_intent_row_payload(row: ExecutionOrderIntentORM) -> dict:
+    return _order_intent_comparison_payload(
+        source_type=row.source_type,
+        source_id=row.source_id,
+        paper_run_id=row.paper_run_id,
+        paper_order_id=row.paper_order_id,
+        client_order_id=row.client_order_id,
+        symbol=row.symbol,
+        instrument_id=row.instrument_id,
+        side=row.side,
+        order_type=row.order_type,
+        quantity=row.quantity,
+        limit_price=row.limit_price,
+        estimated_price=row.estimated_price,
+        estimated_notional=row.estimated_notional,
+        broker_mode=row.broker_mode,
+        risk_profile_name=row.risk_profile_name,
+        risk_summary_payload=row.risk_summary_payload,
+        approval_required=row.approval_required,
+    )
+
+
+def _raise_if_order_intent_conflicts(
+    row: ExecutionOrderIntentORM,
+    expected_payload: dict,
+) -> None:
+    if _order_intent_row_payload(row) != expected_payload:
+        raise ValueError("client_order_id already exists with different payload")
+
+
 class ExecutionSafetyStateRepository:
     def __init__(self, session: Session):
         self.session = session
@@ -1387,51 +1533,29 @@ class ExecutionOrderIntentRepository:
         created_at: datetime,
         updated_at: datetime,
     ) -> tuple[ExecutionOrderIntentORM, bool]:
-        payload_json = _json_dumps(risk_summary_payload)
+        payload_json = _ops_json_dumps(risk_summary_payload)
+        expected_payload = _order_intent_comparison_payload(
+            source_type=source_type,
+            source_id=source_id,
+            paper_run_id=paper_run_id,
+            paper_order_id=paper_order_id,
+            client_order_id=client_order_id,
+            symbol=symbol,
+            instrument_id=instrument_id,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            limit_price=limit_price,
+            estimated_price=estimated_price,
+            estimated_notional=estimated_notional,
+            broker_mode=broker_mode,
+            risk_profile_name=risk_profile_name,
+            risk_summary_payload=payload_json,
+            approval_required=approval_required,
+        )
         existing = self.get_by_client_order_id(client_order_id)
         if existing is not None:
-            expected = {
-                "source_type": source_type,
-                "source_id": source_id,
-                "paper_run_id": paper_run_id,
-                "paper_order_id": paper_order_id,
-                "client_order_id": client_order_id,
-                "symbol": symbol,
-                "instrument_id": instrument_id,
-                "side": side,
-                "order_type": order_type,
-                "quantity": quantity,
-                "limit_price": _normalize_decimal(limit_price),
-                "estimated_price": _normalize_decimal(estimated_price),
-                "estimated_notional": _normalize_decimal(estimated_notional),
-                "broker_mode": broker_mode,
-                "risk_profile_name": risk_profile_name,
-                "risk_summary_payload": json.loads(payload_json),
-                "approval_required": approval_required,
-            }
-            actual = {
-                "source_type": existing.source_type,
-                "source_id": existing.source_id,
-                "paper_run_id": existing.paper_run_id,
-                "paper_order_id": existing.paper_order_id,
-                "client_order_id": existing.client_order_id,
-                "symbol": existing.symbol,
-                "instrument_id": existing.instrument_id,
-                "side": existing.side,
-                "order_type": existing.order_type,
-                "quantity": existing.quantity,
-                "limit_price": _normalize_decimal(existing.limit_price),
-                "estimated_price": _normalize_decimal(existing.estimated_price),
-                "estimated_notional": _normalize_decimal(existing.estimated_notional),
-                "broker_mode": existing.broker_mode,
-                "risk_profile_name": existing.risk_profile_name,
-                "risk_summary_payload": json.loads(existing.risk_summary_payload),
-                "approval_required": existing.approval_required,
-            }
-            if actual != expected:
-                raise ValueError(
-                    "client_order_id already exists with different payload"
-                )
+            _raise_if_order_intent_conflicts(existing, expected_payload)
             return existing, False
 
         row = ExecutionOrderIntentORM(
@@ -1456,9 +1580,17 @@ class ExecutionOrderIntentRepository:
             created_at=created_at,
             updated_at=updated_at,
         )
-        self.session.add(row)
-        self.session.flush()
-        return row, True
+        try:
+            with self.session.begin_nested():
+                self.session.add(row)
+                self.session.flush()
+            return row, True
+        except IntegrityError:
+            existing = self.get_by_client_order_id(client_order_id)
+            if existing is None:
+                raise
+            _raise_if_order_intent_conflicts(existing, expected_payload)
+            return existing, False
 
     def set_status(
         self,
@@ -1522,7 +1654,7 @@ class ExecutionOrderDecisionRepository:
             decision_type=decision_type,
             reason_code=reason_code,
             message=_cap_text(message, 1024),
-            policy_payload=_json_dumps(policy_payload),
+            policy_payload=_ops_json_dumps(policy_payload),
             created_at=created_at,
         )
         self.session.add(row)
@@ -1568,6 +1700,24 @@ class OperatorApprovalRequestRepository:
         requested_at: datetime,
         expires_at: datetime | None,
     ) -> OperatorApprovalRequestORM:
+        return self.get_or_create_active(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            reason_code=reason_code,
+            requested_by=requested_by,
+            requested_at=requested_at,
+            expires_at=expires_at,
+        )
+
+    def get_or_create_active(
+        self,
+        resource_type: str,
+        resource_id: int,
+        reason_code: str,
+        requested_by: str,
+        requested_at: datetime,
+        expires_at: datetime | None,
+    ) -> OperatorApprovalRequestORM:
         existing = self.get_active_for_resource(resource_type, resource_id)
         if existing is not None:
             return existing
@@ -1581,9 +1731,16 @@ class OperatorApprovalRequestRepository:
             requested_at=requested_at,
             expires_at=expires_at,
         )
-        self.session.add(row)
-        self.session.flush()
-        return row
+        try:
+            with self.session.begin_nested():
+                self.session.add(row)
+                self.session.flush()
+            return row
+        except IntegrityError:
+            existing = self.get_active_for_resource(resource_type, resource_id)
+            if existing is None:
+                raise
+            return existing
 
     def decide(
         self,
@@ -1642,7 +1799,7 @@ class SafetyIncidentRepository:
             resource_id=resource_id,
             reason_code=reason_code,
             message=_cap_text(message, 2048),
-            payload=_json_dumps(payload),
+            payload=_ops_json_dumps(payload),
             created_at=created_at,
         )
         self.session.add(row)
@@ -1707,8 +1864,8 @@ class KillSwitchEventRepository:
     ) -> KillSwitchEventORM:
         row = KillSwitchEventORM(
             scope=scope,
-            previous_state_payload=_json_dumps(previous_state_payload),
-            new_state_payload=_json_dumps(new_state_payload),
+            previous_state_payload=_ops_json_dumps(previous_state_payload),
+            new_state_payload=_ops_json_dumps(new_state_payload),
             operator=_cap_text(operator, 128),
             reason=_cap_text(reason, 1024),
             created_at=created_at,

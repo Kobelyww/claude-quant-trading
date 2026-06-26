@@ -125,6 +125,14 @@ def upgrade() -> None:
         ["resource_type", "resource_id"],
     )
     op.create_index(
+        "uq_operator_approval_requests_pending_resource",
+        "operator_approval_requests",
+        ["resource_type", "resource_id"],
+        unique=True,
+        sqlite_where=sa.text("status = 'pending'"),
+        postgresql_where=sa.text("status = 'pending'"),
+    )
+    op.create_index(
         "ix_operator_approval_requests_resource_type",
         "operator_approval_requests",
         ["resource_type"],
@@ -370,6 +378,7 @@ def downgrade() -> None:
         "ix_operator_approval_requests_status",
         "ix_operator_approval_requests_resource_id",
         "ix_operator_approval_requests_resource_type",
+        "uq_operator_approval_requests_pending_resource",
         "ix_operator_approval_requests_resource",
     ]:
         op.drop_index(name, table_name="operator_approval_requests")

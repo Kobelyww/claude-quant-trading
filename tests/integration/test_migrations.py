@@ -28,6 +28,14 @@ def _unique_columns(inspector, table_name: str) -> dict[str, tuple[str, ...]]:
     }
 
 
+def _index_by_name(inspector, table_name: str, index_name: str) -> dict:
+    return next(
+        index
+        for index in inspector.get_indexes(table_name)
+        if index["name"] == index_name
+    )
+
+
 def _default_text(column: dict) -> str:
     return str(column.get("default") or "").strip("'\"")
 
@@ -347,6 +355,16 @@ def _assert_pre_live_safety_ops_schema(inspector) -> None:
         "resource_type",
         "resource_id",
     )
+    assert approval_indexes["uq_operator_approval_requests_pending_resource"] == (
+        "resource_type",
+        "resource_id",
+    )
+    pending_index = _index_by_name(
+        inspector,
+        "operator_approval_requests",
+        "uq_operator_approval_requests_pending_resource",
+    )
+    assert pending_index["unique"] == 1
     for name, columns in {
         "ix_operator_approval_requests_resource_type": ("resource_type",),
         "ix_operator_approval_requests_resource_id": ("resource_id",),
@@ -462,7 +480,15 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
                 "from execution_safety_states where scope = 'global'"
             )
         ).one()
+        partial_index_sql = connection.execute(
+            text(
+                "select sql from sqlite_master "
+                "where type = 'index' "
+                "and name = 'uq_operator_approval_requests_pending_resource'"
+            )
+        ).scalar_one()
     assert tuple(row) == ("global", False, True, True, False)
+    assert "WHERE status = 'pending'" in partial_index_sql
 
 
 def test_validation_report_migration_downgrade_and_reupgrade(
@@ -475,12 +501,19 @@ def test_validation_report_migration_downgrade_and_reupgrade(
     config = Config("alembic.ini")
     command.upgrade(config, "head")
     _assert_validation_report_schema(_inspector(database_url))
+    _assert_pre_live_safety_ops_schema(_inspector(database_url))
 
     command.downgrade(config, "20260624_0008")
     downgraded_inspector = _inspector(database_url)
     downgraded_tables = set(downgraded_inspector.get_table_names())
     assert "data_quality_reports" not in downgraded_tables
     assert "research_validation_reports" not in downgraded_tables
+    assert "execution_safety_states" not in downgraded_tables
+    assert "execution_order_intents" not in downgraded_tables
+    assert "execution_order_decisions" not in downgraded_tables
+    assert "operator_approval_requests" not in downgraded_tables
+    assert "safety_incidents" not in downgraded_tables
+    assert "kill_switch_events" not in downgraded_tables
     downgraded_candidate_columns = _columns(
         downgraded_inspector, "agent_candidate_reviews"
     )
@@ -493,3 +526,4 @@ def test_validation_report_migration_downgrade_and_reupgrade(
     assert "data_quality_reports" in reupgraded_tables
     assert "research_validation_reports" in reupgraded_tables
     _assert_validation_report_schema(reupgraded_inspector)
+    _assert_pre_live_safety_ops_schema(reupgraded_inspector)

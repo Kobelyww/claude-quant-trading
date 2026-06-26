@@ -10,11 +10,13 @@ from quant_trading.api.routes import (
     agents,
     dashboard,
     backtests,
+    data_quality_reports,
     data_sync,
     health,
     instruments,
     jobs,
     paper,
+    research_validation_reports,
     schedules,
     workflows,
 )
@@ -56,6 +58,8 @@ def create_app(engine: Engine | None = None, settings: AppSettings | None = None
     app.include_router(jobs.router)
     app.include_router(schedules.router)
     app.include_router(data_sync.router)
+    app.include_router(data_quality_reports.router)
+    app.include_router(research_validation_reports.router)
     app.include_router(workflows.router)
     app.include_router(dashboard.router)
     install_token_auth(app, settings)

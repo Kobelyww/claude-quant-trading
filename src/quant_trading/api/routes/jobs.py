@@ -13,12 +13,14 @@ from quant_trading.api.routes.workflows import ImportLegacyRequest, MACrossBackt
 from quant_trading.jobs.queue import make_queue
 from quant_trading.jobs.runtime import (
     BACKTEST_MA_CROSS,
+    DATA_QUALITY_REPORT,
     IMPORT_LEGACY,
     JOB_AGENT_BACKTEST_REVIEW,
     JOB_AGENT_MARKET_ANALYSIS,
     JOB_AGENT_STRATEGY_IDEA,
     MARKET_DATA_SYNC,
     PAPER_RUN_TICK,
+    RESEARCH_VALIDATION,
 )
 from quant_trading.jobs.cancellation import cancel_job_run
 from quant_trading.jobs.service import submit_job_run
@@ -34,6 +36,18 @@ class MarketDataSyncRequest(BaseModel):
     symbol: str = Field(min_length=1)
     start: str | None = None
     end: str | None = None
+
+
+class DataQualityReportRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=32)
+    candidate_review_id: int | None = Field(default=None, gt=0)
+    backtest_run_id: int | None = Field(default=None, gt=0)
+    start: str | None = None
+    end: str | None = None
+
+
+class ResearchValidationRequest(BaseModel):
+    candidate_review_id: int = Field(gt=0)
 
 
 class AgentMarketAnalysisRequest(BaseModel):
@@ -102,6 +116,38 @@ def create_market_data_sync_job(payload: MarketDataSyncRequest, request: Request
             request.app.state.engine,
             request.app.state.settings,
             MARKET_DATA_SYNC,
+            payload.model_dump(mode="json"),
+            make_queue,
+        )
+    )
+
+
+@router.post("/data-quality/report")
+def create_data_quality_report_job(
+    payload: DataQualityReportRequest,
+    request: Request,
+) -> dict[str, Any]:
+    return _job_payload(
+        submit_job_run(
+            request.app.state.engine,
+            request.app.state.settings,
+            DATA_QUALITY_REPORT,
+            payload.model_dump(mode="json"),
+            make_queue,
+        )
+    )
+
+
+@router.post("/validation/research")
+def create_research_validation_job(
+    payload: ResearchValidationRequest,
+    request: Request,
+) -> dict[str, Any]:
+    return _job_payload(
+        submit_job_run(
+            request.app.state.engine,
+            request.app.state.settings,
+            RESEARCH_VALIDATION,
             payload.model_dump(mode="json"),
             make_queue,
         )

@@ -21,10 +21,12 @@ from quant_trading.agents.service import (
     run_strategy_idea_agent,
 )
 from quant_trading.config import AppSettings
+from quant_trading.data.quality import build_data_quality_report
 from quant_trading.data.providers.registry import build_default_provider_registry
 from quant_trading.data.sync import sync_daily_market_data
 from quant_trading.jobs.cancellation import CancellationToken, JobCancelled
 from quant_trading.storage.db import make_engine, session_scope
+from quant_trading.validation.research import run_candidate_research_validation
 from quant_trading.storage.repositories import JobEventRepository, JobRunRepository
 from quant_trading.workflows.operations import (
     import_legacy_data,
@@ -37,6 +39,8 @@ IMPORT_LEGACY = "import_legacy"
 BACKTEST_MA_CROSS = "backtest_ma_cross"
 PAPER_RUN_TICK = "paper_run_tick"
 MARKET_DATA_SYNC = "market_data_sync"
+DATA_QUALITY_REPORT = "data_quality_report"
+RESEARCH_VALIDATION = "research_validation"
 JOB_AGENT_MARKET_ANALYSIS = "agent_market_analysis"
 JOB_AGENT_STRATEGY_IDEA = "agent_strategy_idea"
 JOB_AGENT_BACKTEST_REVIEW = "agent_backtest_review"
@@ -45,6 +49,8 @@ SUPPORTED_JOB_TYPES = {
     BACKTEST_MA_CROSS,
     PAPER_RUN_TICK,
     MARKET_DATA_SYNC,
+    DATA_QUALITY_REPORT,
+    RESEARCH_VALIDATION,
     JOB_AGENT_MARKET_ANALYSIS,
     JOB_AGENT_STRATEGY_IDEA,
     JOB_AGENT_BACKTEST_REVIEW,
@@ -86,7 +92,12 @@ def execute_job_run_with_engine(engine: Engine, job_run_id: int) -> dict[str, An
         )
         job_type = job.job_type
         request_payload = _json_loads(job.request_payload)
-        if job_type in {MARKET_DATA_SYNC, *AGENT_JOB_TYPES}:
+        if job_type in {
+            MARKET_DATA_SYNC,
+            DATA_QUALITY_REPORT,
+            RESEARCH_VALIDATION,
+            *AGENT_JOB_TYPES,
+        }:
             request_payload = {**request_payload, "job_run_id": job_run_id}
 
     try:
@@ -221,6 +232,28 @@ def _execute_payload(
             start=payload.get("start"),
             end=payload.get("end"),
             registry=build_default_provider_registry(),
+            job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,
+            cancellation_token=cancellation_token,
+            progress_callback=progress_callback,
+        )
+    if job_type == DATA_QUALITY_REPORT:
+        return build_data_quality_report(
+            engine,
+            symbol=str(payload["symbol"]),
+            candidate_review_id=int(payload["candidate_review_id"])
+            if payload.get("candidate_review_id")
+            else None,
+            backtest_run_id=int(payload["backtest_run_id"])
+            if payload.get("backtest_run_id")
+            else None,
+            start=date.fromisoformat(payload["start"]) if payload.get("start") else None,
+            end=date.fromisoformat(payload["end"]) if payload.get("end") else None,
+            job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,
+        )
+    if job_type == RESEARCH_VALIDATION:
+        return run_candidate_research_validation(
+            engine,
+            candidate_review_id=int(payload["candidate_review_id"]),
             job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,
             cancellation_token=cancellation_token,
             progress_callback=progress_callback,

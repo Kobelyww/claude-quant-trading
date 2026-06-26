@@ -14,8 +14,10 @@ from quant_trading.storage.migrate_legacy import import_legacy_sqlite
 from quant_trading.storage.models import (
     BacktestRunORM,
     BrokerOrderEventORM,
+    DataQualityReportORM,
     JobRunORM,
     PaperRunORM,
+    ResearchValidationReportORM,
 )
 from quant_trading.storage.repositories import AgentRunRepository
 
@@ -146,12 +148,16 @@ def test_approval_endpoint_submits_inline_backtest_and_list_get_return_decoded_p
     ]
     assert approved["backtest_job_run_id"] is not None
     assert approved["backtest_run_id"] is not None
+    assert approved["data_quality_report_id"] is None
+    assert approved["research_validation_report_id"] is None
 
     assert list_response.status_code == 200
     assert [row["id"] for row in list_response.json()] == [approved["id"]]
     assert list_response.json()[0]["candidate_payload"] == _candidate_result()[
         "candidate_payload"
     ]
+    assert list_response.json()[0]["data_quality_report_id"] is None
+    assert list_response.json()[0]["research_validation_report_id"] is None
 
     get_response = client.get(f"/agent-candidates/{approved['id']}")
     assert get_response.status_code == 200
@@ -162,6 +168,28 @@ def test_approval_endpoint_submits_inline_backtest_and_list_get_return_decoded_p
     assert counts["backtests"] == 1
     assert counts["papers"] == 0
     assert counts["broker_events"] == 0
+
+
+def test_get_agent_candidate_returns_linked_validation_report_ids(legacy_sqlite_db):
+    engine = _create_engine()
+    import_legacy_sqlite(legacy_sqlite_db, engine)
+    source_id = _create_source_agent_run(engine)
+    client = _client(engine)
+    approved = client.post(
+        f"/agent-candidates/{source_id}/approve",
+        json={"operator": "research lead", "note": "approved for deterministic backtest"},
+    ).json()
+    data_quality_report_id, validation_report_id = _link_validation_reports(
+        engine,
+        approved["id"],
+    )
+
+    response = client.get(f"/agent-candidates/{approved['id']}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data_quality_report_id"] == data_quality_report_id
+    assert payload["research_validation_report_id"] == validation_report_id
 
 
 def test_reject_endpoint_creates_rejected_review_no_job_and_later_approval_conflicts():
@@ -271,3 +299,62 @@ def test_missing_and_malformed_candidate_decision_requests_return_expected_error
     assert approve_missing_response.status_code == 404
     assert approve_missing_response.json()["detail"] == "source agent run not found"
     assert blank_body_response.status_code == 400
+
+
+def _link_validation_reports(engine, candidate_review_id: int) -> tuple[int, int]:
+    now = datetime(2026, 6, 24, 9, 5, 0)
+    with session_scope(engine) as session:
+        from quant_trading.storage.repositories import AgentCandidateReviewRepository
+
+        review = AgentCandidateReviewRepository(session).get(candidate_review_id)
+        assert review is not None
+        assert review.backtest_run_id is not None
+        data_quality = DataQualityReportORM(
+            candidate_review_id=candidate_review_id,
+            backtest_run_id=review.backtest_run_id,
+            symbol=review.symbol,
+            source="test",
+            adjusted="qfq",
+            start_date=datetime(2026, 1, 1).date(),
+            end_date=datetime(2026, 1, 2).date(),
+            bar_count=2,
+            expected_bar_count=2,
+            missing_bar_count=0,
+            duplicate_timestamp_count=0,
+            non_positive_price_count=0,
+            non_positive_volume_count=0,
+            invalid_ohlc_count=0,
+            stale_data=False,
+            data_fingerprint="test-fingerprint",
+            status="passed",
+            severity="none",
+            findings_payload="{}",
+            created_at=now,
+            finished_at=now,
+            duration_ms=1,
+        )
+        session.add(data_quality)
+        session.flush()
+        validation = ResearchValidationReportORM(
+            candidate_review_id=candidate_review_id,
+            source_backtest_run_id=review.backtest_run_id,
+            data_quality_report_id=data_quality.id,
+            symbol=review.symbol,
+            strategy_name=review.strategy_name,
+            validation_status="passed",
+            readiness_floor="needs_review",
+            in_sample_metrics_payload="{}",
+            out_of_sample_metrics_payload="{}",
+            walk_forward_payload="{}",
+            parameter_sensitivity_payload="{}",
+            benchmark_payload="{}",
+            summary_payload="{}",
+            created_at=now,
+            finished_at=now,
+            duration_ms=1,
+        )
+        session.add(validation)
+        session.flush()
+        review.data_quality_report_id = data_quality.id
+        review.research_validation_report_id = validation.id
+        return data_quality.id, validation.id

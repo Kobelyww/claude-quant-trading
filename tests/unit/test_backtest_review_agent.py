@@ -14,6 +14,8 @@ from quant_trading.storage.models import (
     BacktestEquityPointORM,
     BacktestOrderORM,
     BacktestRunORM,
+    DataQualityReportORM,
+    ResearchValidationReportORM,
 )
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
@@ -449,3 +451,114 @@ def test_load_backtest_review_context_reads_review_source_run_backtest_and_metri
         "max_drawdown": "0.050000",
         "order_count": 1,
     }
+
+
+def test_load_backtest_review_context_includes_validation_and_data_quality_reports():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    now = datetime(2026, 6, 24, 9, 0, 0)
+
+    with session_scope(engine) as session:
+        source = AgentRunRepository(session).create_running(
+            agent_type="strategy_idea",
+            symbol="000001",
+            model_name="fake-llm",
+            request_payload=json.dumps({"idea": "ma cross"}),
+            job_run_id=None,
+            started_at=now,
+        )
+        AgentRunRepository(session).mark_succeeded(
+            source,
+            metrics_payload="{}",
+            result_payload=json.dumps(
+                {
+                    "parsed": True,
+                    "candidate_payload": {"strategy_name": "ma_cross", "symbol": "000001"},
+                }
+            ),
+            finished_at=now,
+            duration_ms=1,
+        )
+        run = BacktestRunORM(
+            strategy_name="ma_cross",
+            symbol="000001",
+            initial_cash=Decimal("100000.000000"),
+            final_equity=Decimal("95000.000000"),
+            status="done",
+            created_at=now,
+        )
+        session.add(run)
+        session.flush()
+        review = AgentCandidateReviewRepository(session).create_decision(
+            source_agent_run_id=source.id,
+            status="backtest_succeeded",
+            symbol="000001",
+            strategy_name="ma_cross",
+            candidate_payload=json.dumps({"strategy_name": "ma_cross", "symbol": "000001"}),
+            backtest_request_payload=json.dumps(
+                {"job_type": "backtest_ma_cross", "payload": {"symbol": "000001"}}
+            ),
+            operator="local",
+            operator_note="approved for research backtest",
+            decided_at=now,
+            created_at=now,
+        )
+        review.backtest_run_id = run.id
+        data_quality = DataQualityReportORM(
+            candidate_review_id=review.id,
+            backtest_run_id=run.id,
+            symbol="000001",
+            source="test",
+            adjusted="qfq",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+            bar_count=2,
+            expected_bar_count=2,
+            missing_bar_count=0,
+            duplicate_timestamp_count=0,
+            non_positive_price_count=0,
+            non_positive_volume_count=0,
+            invalid_ohlc_count=0,
+            stale_data=False,
+            data_fingerprint="test-fingerprint",
+            status="passed",
+            severity="none",
+            findings_payload='{"missing":[]}',
+            created_at=now,
+            finished_at=now,
+            duration_ms=1,
+        )
+        session.add(data_quality)
+        session.flush()
+        validation = ResearchValidationReportORM(
+            candidate_review_id=review.id,
+            source_backtest_run_id=run.id,
+            data_quality_report_id=data_quality.id,
+            symbol="000001",
+            strategy_name="ma_cross",
+            validation_status="failed",
+            readiness_floor="not_ready",
+            in_sample_metrics_payload='{"return_pct":"1.000000"}',
+            out_of_sample_metrics_payload='{"return_pct":"-1.000000"}',
+            walk_forward_payload='{"windows":[{"return_pct":"-1.000000"}]}',
+            parameter_sensitivity_payload='{"runs":[{"return_pct":"-2.000000"}]}',
+            benchmark_payload='{"excess_return_pct":"-3.000000"}',
+            summary_payload='{"reasons":[{"code":"test_floor"}]}',
+            created_at=now,
+            finished_at=now,
+            duration_ms=1,
+        )
+        session.add(validation)
+        session.flush()
+        review.data_quality_report_id = data_quality.id
+        review.research_validation_report_id = validation.id
+        candidate_review_id = review.id
+        data_quality_report_id = data_quality.id
+        validation_report_id = validation.id
+
+    context = load_backtest_review_context(engine, candidate_review_id)
+
+    assert context["data_quality_report"]["id"] == data_quality_report_id
+    assert context["data_quality_report"]["status"] == "passed"
+    assert context["research_validation_report"]["id"] == validation_report_id
+    assert context["research_validation_report"]["readiness_floor"] == "not_ready"

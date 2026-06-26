@@ -15,6 +15,8 @@ from quant_trading.storage.models import (
     BacktestEquityPointORM,
     BacktestOrderORM,
     BacktestRunORM,
+    DataQualityReportORM,
+    ResearchValidationReportORM,
 )
 
 
@@ -208,12 +210,27 @@ def load_backtest_review_context(
         if backtest_run is None:
             raise ValueError("backtest run not found")
 
+        data_quality_report = (
+            session.get(DataQualityReportORM, review.data_quality_report_id)
+            if review.data_quality_report_id is not None
+            else None
+        )
+        validation_report = (
+            session.get(ResearchValidationReportORM, review.research_validation_report_id)
+            if review.research_validation_report_id is not None
+            else None
+        )
+
         return {
             "candidate_review": _candidate_review_payload(review),
             "source_agent_run": _agent_run_payload(source_agent_run),
             "source_agent_result": _json_loads(source_agent_run.result_payload),
             "backtest_run": _backtest_run_payload(backtest_run),
             "metrics": _backtest_metrics(session, backtest_run),
+            "data_quality_report": _data_quality_report_payload(data_quality_report),
+            "research_validation_report": _research_validation_report_payload(
+                validation_report
+            ),
         }
 
 
@@ -268,10 +285,57 @@ def _candidate_review_payload(row: AgentCandidateReviewORM) -> dict[str, Any]:
         "backtest_job_run_id": row.backtest_job_run_id,
         "backtest_run_id": row.backtest_run_id,
         "review_agent_run_id": row.review_agent_run_id,
+        "data_quality_report_id": row.data_quality_report_id,
+        "research_validation_report_id": row.research_validation_report_id,
         "error_message": row.error_message,
         "decided_at": _isoformat(row.decided_at),
         "created_at": _isoformat(row.created_at),
         "updated_at": _isoformat(row.updated_at),
+    }
+
+
+def _data_quality_report_payload(row: DataQualityReportORM | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "status": row.status,
+        "severity": row.severity,
+        "symbol": row.symbol,
+        "source": row.source,
+        "adjusted": row.adjusted,
+        "start_date": _isoformat(row.start_date),
+        "end_date": _isoformat(row.end_date),
+        "bar_count": row.bar_count,
+        "expected_bar_count": row.expected_bar_count,
+        "missing_bar_count": row.missing_bar_count,
+        "duplicate_timestamp_count": row.duplicate_timestamp_count,
+        "non_positive_price_count": row.non_positive_price_count,
+        "non_positive_volume_count": row.non_positive_volume_count,
+        "invalid_ohlc_count": row.invalid_ohlc_count,
+        "stale_data": row.stale_data,
+        "data_fingerprint": row.data_fingerprint,
+    }
+
+
+def _research_validation_report_payload(
+    row: ResearchValidationReportORM | None,
+) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "validation_status": row.validation_status,
+        "readiness_floor": row.readiness_floor,
+        "data_quality_report_id": row.data_quality_report_id,
+        "source_backtest_run_id": row.source_backtest_run_id,
+        "out_of_sample_metrics": _json_loads(row.out_of_sample_metrics_payload),
+        "walk_forward_summary": _json_loads(row.walk_forward_payload),
+        "parameter_sensitivity_summary": _json_loads(
+            row.parameter_sensitivity_payload
+        ),
+        "benchmark": _json_loads(row.benchmark_payload),
+        "summary_payload": _json_loads(row.summary_payload),
     }
 
 

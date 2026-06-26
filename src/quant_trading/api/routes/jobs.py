@@ -25,7 +25,7 @@ from quant_trading.jobs.runtime import (
 from quant_trading.jobs.cancellation import cancel_job_run
 from quant_trading.jobs.service import submit_job_run
 from quant_trading.storage.db import session_scope
-from quant_trading.storage.models import JobEventORM, JobRunORM
+from quant_trading.storage.models import AgentCandidateReviewORM, JobEventORM, JobRunORM
 from quant_trading.storage.repositories import JobEventRepository, JobRunRepository
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -68,6 +68,7 @@ class AgentStrategyIdeaRequest(BaseModel):
 class AgentBacktestReviewRequest(BaseModel):
     candidate_review_id: int = Field(gt=0)
     backtest_run_id: int | None = Field(default=None, gt=0)
+    require_validation_report: bool = True
 
 
 @router.post("/import-legacy")
@@ -191,6 +192,11 @@ def create_agent_backtest_review_job(
     payload: AgentBacktestReviewRequest,
     request: Request,
 ) -> dict[str, Any]:
+    if payload.require_validation_report:
+        _ensure_backtest_review_validation_report(
+            request.app.state.engine,
+            payload.candidate_review_id,
+        )
     return _job_payload(
         submit_job_run(
             request.app.state.engine,
@@ -275,6 +281,18 @@ def get_job(job_run_id: int, request: Request) -> dict[str, Any]:
         if row is None:
             raise HTTPException(status_code=404, detail="job run not found")
         return _job_payload(row)
+
+
+def _ensure_backtest_review_validation_report(engine, candidate_review_id: int) -> None:
+    with session_scope(engine) as session:
+        row = session.get(AgentCandidateReviewORM, candidate_review_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="candidate review not found")
+        if row.research_validation_report_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="validation report is required for backtest review",
+            )
 
 
 def _job_payload(row: JobRunORM) -> dict[str, Any]:

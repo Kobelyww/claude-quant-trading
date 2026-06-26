@@ -306,6 +306,9 @@ def _execute_payload(
                 backtest_run_id=int(payload["backtest_run_id"])
                 if payload.get("backtest_run_id")
                 else None,
+                require_validation_report=bool(
+                    payload.get("require_validation_report", True)
+                ),
             ),
             llm_client_factory=build_agent_llm_client,
             job_run_id=int(payload["job_run_id"]) if payload.get("job_run_id") else None,

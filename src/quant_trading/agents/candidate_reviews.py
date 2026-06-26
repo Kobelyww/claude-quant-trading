@@ -103,6 +103,8 @@ def candidate_review_payload(row: AgentCandidateReviewORM) -> dict[str, Any]:
         "backtest_job_run_id": row.backtest_job_run_id,
         "backtest_run_id": row.backtest_run_id,
         "review_agent_run_id": row.review_agent_run_id,
+        "data_quality_report_id": row.data_quality_report_id,
+        "research_validation_report_id": row.research_validation_report_id,
         "error_message": row.error_message,
         "decided_at": _isoformat(row.decided_at),
         "created_at": _isoformat(row.created_at),

@@ -4,7 +4,8 @@ from decimal import Decimal
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+import pytest
+from sqlalchemy import func, select
 
 from quant_trading.api.main import create_app
 from quant_trading.config import AppSettings
@@ -21,7 +22,11 @@ from quant_trading.agents.service import (
 )
 from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
-from quant_trading.storage.models import AgentRunORM
+from quant_trading.storage.models import (
+    AgentRunORM,
+    DataQualityReportORM,
+    ResearchValidationReportORM,
+)
 from quant_trading.storage.repositories import AgentCandidateReviewRepository, AgentRunRepository
 
 
@@ -176,6 +181,7 @@ def test_run_backtest_review_agent_persists_research_only_result():
         BacktestReviewRequest(
             candidate_review_id=candidate_review_id,
             backtest_run_id=backtest_run_id,
+            require_validation_report=False,
         ),
         llm_client=FakeLLMClient(VALID_BACKTEST_REVIEW_RESPONSE),
         job_run_id=8,
@@ -193,6 +199,7 @@ def test_run_backtest_review_agent_persists_research_only_result():
     assert json.loads(row.request_payload) == {
         "backtest_run_id": backtest_run_id,
         "candidate_review_id": candidate_review_id,
+        "require_validation_report": False,
     }
     assert json.loads(row.metrics_payload)["return_pct"] == "2.000000"
     assert result["agent_type"] == "backtest_review"
@@ -206,6 +213,82 @@ def test_run_backtest_review_agent_persists_research_only_result():
     assert review.status == "review_succeeded"
     assert review.review_agent_run_id == result["agent_run_id"]
     assert review.error_message is None
+
+
+def test_run_backtest_review_agent_rejects_missing_validation_report_without_agent_row():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id, _ = _seed_backtest_review_candidate(engine)
+
+    with pytest.raises(ValueError, match="validation report is required"):
+        run_backtest_review_agent(
+            engine,
+            BacktestReviewRequest(candidate_review_id=candidate_review_id),
+            llm_client=FakeLLMClient(VALID_BACKTEST_REVIEW_RESPONSE),
+        )
+
+    with session_scope(engine) as session:
+        assert (
+            session.scalar(
+                select(func.count(AgentRunORM.id)).where(
+                    AgentRunORM.agent_type == "backtest_review"
+                )
+            )
+            == 0
+        )
+
+
+def test_run_backtest_review_agent_allows_explicit_validation_override():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id, backtest_run_id = _seed_backtest_review_candidate(engine)
+
+    result = run_backtest_review_agent(
+        engine,
+        BacktestReviewRequest(
+            candidate_review_id=candidate_review_id,
+            require_validation_report=False,
+        ),
+        llm_client=FakeLLMClient(VALID_BACKTEST_REVIEW_RESPONSE),
+    )
+
+    assert result["candidate_review_id"] == candidate_review_id
+    assert result["backtest_run_id"] == backtest_run_id
+    assert result["paper_trading_readiness"] == "needs_review"
+    assert result["validation_report_id"] is None
+    assert result["data_quality_report_id"] is None
+
+
+def test_run_backtest_review_agent_caps_readiness_by_validation_floor():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id, _ = _seed_backtest_review_candidate(engine)
+    data_quality_report_id, validation_report_id = _link_validation_reports(
+        engine,
+        candidate_review_id,
+        readiness_floor="not_ready",
+    )
+    ready_response = json.dumps(
+        {
+            "summary": "Historical research diagnostics are complete.",
+            "risk_flags": [],
+            "overfit_warnings": [],
+            "paper_trading_readiness": "ready_for_paper_research",
+            "recommended_next_steps": ["run additional offline research diagnostics"],
+        },
+        ensure_ascii=False,
+    )
+
+    result = run_backtest_review_agent(
+        engine,
+        BacktestReviewRequest(candidate_review_id=candidate_review_id),
+        llm_client=FakeLLMClient(ready_response),
+    )
+
+    assert result["paper_trading_readiness"] == "not_ready"
+    assert result["readiness_floor_applied"] is True
+    assert result["validation_report_id"] == validation_report_id
+    assert result["data_quality_report_id"] == data_quality_report_id
 
 
 def test_run_backtest_review_agent_rejects_non_succeeded_candidate_without_trading_rows():
@@ -222,6 +305,7 @@ def test_run_backtest_review_agent_rejects_non_succeeded_candidate_without_tradi
             BacktestReviewRequest(
                 candidate_review_id=candidate_review_id,
                 backtest_run_id=backtest_run_id,
+                require_validation_report=False,
             ),
             llm_client=FakeLLMClient(VALID_BACKTEST_REVIEW_RESPONSE),
         )
@@ -257,6 +341,7 @@ def test_run_backtest_review_agent_rejects_mismatched_backtest_run_id():
             BacktestReviewRequest(
                 candidate_review_id=candidate_review_id,
                 backtest_run_id=mismatched_backtest_run_id,
+                require_validation_report=False,
             ),
             llm_client=FakeLLMClient(VALID_BACKTEST_REVIEW_RESPONSE),
         )
@@ -390,6 +475,7 @@ def test_backtest_review_job_api_persists_agent_run_and_creates_no_trading_rows(
         json={
             "candidate_review_id": candidate_review_id,
             "backtest_run_id": backtest_run_id,
+            "require_validation_report": False,
         },
     )
 
@@ -425,6 +511,48 @@ def test_backtest_review_job_api_persists_agent_run_and_creates_no_trading_rows(
         assert "secret-test-key" not in job.request_payload
         assert "deepseek_api_key" not in json.loads(workflow.request_payload)
         assert "secret-test-key" not in workflow.request_payload
+
+
+def test_backtest_review_job_api_rejects_missing_validation_before_agent_run(monkeypatch):
+    from quant_trading.jobs import runtime as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module,
+        "build_agent_llm_client",
+        lambda settings: FakeLLMClient(VALID_BACKTEST_REVIEW_RESPONSE),
+    )
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id, backtest_run_id = _seed_backtest_review_candidate(engine)
+    client = TestClient(
+        create_app(
+            engine=engine,
+            settings=AppSettings(
+                deepseek_api_key="secret-test-key",
+                job_executor="inline",
+            ),
+        )
+    )
+
+    response = client.post(
+        "/jobs/agents/backtest-review",
+        json={
+            "candidate_review_id": candidate_review_id,
+            "backtest_run_id": backtest_run_id,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "validation report is required for backtest review"
+    with session_scope(engine) as session:
+        assert (
+            session.scalar(
+                select(func.count(AgentRunORM.id)).where(
+                    AgentRunORM.agent_type == "backtest_review"
+                )
+            )
+            == 0
+        )
 
 
 def test_strategy_idea_candidate_job_does_not_create_trading_rows(monkeypatch):
@@ -607,3 +735,73 @@ def _create_unlinked_backtest_run(engine) -> int:
         session.add(run)
         session.flush()
         return run.id
+
+
+def _link_validation_reports(
+    engine,
+    candidate_review_id: int,
+    *,
+    readiness_floor: str,
+) -> tuple[int, int]:
+    now = datetime(2026, 6, 24, 9, 5, 0)
+    with session_scope(engine) as session:
+        review = AgentCandidateReviewRepository(session).get(candidate_review_id)
+        assert review is not None
+        assert review.backtest_run_id is not None
+        data_quality = DataQualityReportORM(
+            candidate_review_id=candidate_review_id,
+            backtest_run_id=review.backtest_run_id,
+            symbol=review.symbol,
+            source="test",
+            adjusted="qfq",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+            bar_count=2,
+            expected_bar_count=2,
+            missing_bar_count=0,
+            duplicate_timestamp_count=0,
+            non_positive_price_count=0,
+            non_positive_volume_count=0,
+            invalid_ohlc_count=0,
+            stale_data=False,
+            data_fingerprint="test-fingerprint",
+            status="passed",
+            severity="none",
+            findings_payload="{}",
+            created_at=now,
+            finished_at=now,
+            duration_ms=1,
+        )
+        session.add(data_quality)
+        session.flush()
+        validation = ResearchValidationReportORM(
+            candidate_review_id=candidate_review_id,
+            source_backtest_run_id=review.backtest_run_id,
+            data_quality_report_id=data_quality.id,
+            symbol=review.symbol,
+            strategy_name=review.strategy_name,
+            validation_status="failed" if readiness_floor == "not_ready" else "passed",
+            readiness_floor=readiness_floor,
+            in_sample_metrics_payload='{"return_pct":"1.000000"}',
+            out_of_sample_metrics_payload='{"return_pct":"-1.000000"}',
+            walk_forward_payload='{"windows":[{"return_pct":"-1.000000"}]}',
+            parameter_sensitivity_payload='{"runs":[{"return_pct":"-2.000000"}]}',
+            benchmark_payload='{"excess_return_pct":"-3.000000"}',
+            summary_payload=json.dumps(
+                {
+                    "candidate_review_id": candidate_review_id,
+                    "readiness_floor": readiness_floor,
+                    "reasons": [{"code": "test_floor"}],
+                    "research_only": True,
+                },
+                sort_keys=True,
+            ),
+            created_at=now,
+            finished_at=now,
+            duration_ms=1,
+        )
+        session.add(validation)
+        session.flush()
+        review.data_quality_report_id = data_quality.id
+        review.research_validation_report_id = validation.id
+        return data_quality.id, validation.id

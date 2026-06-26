@@ -48,6 +48,7 @@ class StrategyIdeaRequest:
 class BacktestReviewRequest:
     candidate_review_id: int
     backtest_run_id: int | None = None
+    require_validation_report: bool = True
 
 
 @dataclass(frozen=True)

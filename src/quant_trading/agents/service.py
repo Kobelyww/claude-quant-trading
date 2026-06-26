@@ -39,6 +39,7 @@ from quant_trading.storage.repositories import (
     AgentRunRepository,
     MarketDataRepository,
 )
+from quant_trading.validation.metrics import cap_readiness
 
 STATUS_BACKTEST_SUCCEEDED = "backtest_succeeded"
 
@@ -234,6 +235,7 @@ def run_backtest_review_agent(
         {
             "candidate_review_id": request.candidate_review_id,
             "backtest_run_id": request.backtest_run_id,
+            "require_validation_report": request.require_validation_report,
         }
     )
 
@@ -247,6 +249,9 @@ def run_backtest_review_agent(
         candidate_review = context["candidate_review"]
         if candidate_review.get("status") != STATUS_BACKTEST_SUCCEEDED:
             raise ValueError("candidate review must have backtest_succeeded status")
+        validation_report = context.get("research_validation_report")
+        if request.require_validation_report and not validation_report:
+            raise ValueError("validation report is required for backtest review")
         resolved_backtest_run_id = int(context["backtest_run"]["id"])
         metrics = context["metrics"]
         symbol = str(metrics.get("symbol") or context["backtest_run"].get("symbol") or "")
@@ -282,6 +287,23 @@ def run_backtest_review_agent(
             candidate_review_id=request.candidate_review_id,
             backtest_run_id=resolved_backtest_run_id,
         )
+        readiness_floor = (
+            str(validation_report.get("readiness_floor") or "not_ready")
+            if validation_report
+            else "ready_for_paper_research"
+        )
+        capped_readiness, floor_applied = cap_readiness(
+            str(parsed_payload.get("paper_trading_readiness") or "needs_review"),
+            readiness_floor,
+        )
+        parsed_payload["paper_trading_readiness"] = capped_readiness
+        parsed_payload["readiness_floor_applied"] = floor_applied
+        parsed_payload["validation_report_id"] = (
+            validation_report.get("id") if validation_report else None
+        )
+        parsed_payload["data_quality_report_id"] = (
+            context.get("data_quality_report") or {}
+        ).get("id")
         result_payload = {
             "agent_run_id": agent_run_id,
             "agent_type": AGENT_BACKTEST_REVIEW,

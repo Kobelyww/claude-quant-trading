@@ -144,6 +144,48 @@ def test_order_intent_repository_rejects_conflicting_duplicate_client_order_id()
             )
 
 
+def test_order_intent_status_caps_blocked_reason():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 0, 0)
+    payload = _order_intent_payload(now)
+
+    with session_scope(engine) as session:
+        repo = ExecutionOrderIntentRepository(session)
+        row, _ = repo.get_or_create(**payload)
+        repo.set_status(
+            row,
+            "blocked",
+            now + timedelta(minutes=1),
+            blocked_reason_code="risk_limit",
+            blocked_reason="x" * 2000,
+        )
+
+        assert row.blocked_reason_code == "risk_limit"
+        assert len(row.blocked_reason) == 1024
+
+
+def test_order_intent_retry_ignores_mutable_approval_required_state():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 0, 0)
+    payload = _order_intent_payload(now)
+
+    with session_scope(engine) as session:
+        repo = ExecutionOrderIntentRepository(session)
+        row, created = repo.get_or_create(**payload)
+        repo.set_status(
+            row,
+            "approval_required",
+            now + timedelta(minutes=1),
+            approval_required=True,
+        )
+        same_row, same_created = repo.get_or_create(**payload)
+
+        assert created is True
+        assert same_created is False
+        assert same_row.id == row.id
+        assert same_row.approval_required is True
+
+
 def test_order_intent_repository_recovers_duplicate_insert_as_idempotent(
     tmp_path,
     monkeypatch,

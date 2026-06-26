@@ -1384,7 +1384,6 @@ def _order_intent_comparison_payload(
     broker_mode: str,
     risk_profile_name: str,
     risk_summary_payload: str,
-    approval_required: bool,
 ) -> dict:
     return {
         "source_type": source_type,
@@ -1403,7 +1402,6 @@ def _order_intent_comparison_payload(
         "broker_mode": broker_mode,
         "risk_profile_name": risk_profile_name,
         "risk_summary_payload": json.loads(risk_summary_payload),
-        "approval_required": approval_required,
     }
 
 
@@ -1425,7 +1423,6 @@ def _order_intent_row_payload(row: ExecutionOrderIntentORM) -> dict:
         broker_mode=row.broker_mode,
         risk_profile_name=row.risk_profile_name,
         risk_summary_payload=row.risk_summary_payload,
-        approval_required=row.approval_required,
     )
 
 
@@ -1551,7 +1548,6 @@ class ExecutionOrderIntentRepository:
             broker_mode=broker_mode,
             risk_profile_name=risk_profile_name,
             risk_summary_payload=payload_json,
-            approval_required=approval_required,
         )
         existing = self.get_by_client_order_id(client_order_id)
         if existing is not None:
@@ -1613,7 +1609,7 @@ class ExecutionOrderIntentRepository:
         if blocked_reason_code is not None:
             row.blocked_reason_code = blocked_reason_code
         if blocked_reason is not None:
-            row.blocked_reason = blocked_reason
+            row.blocked_reason = _cap_text(blocked_reason, 1024)
         if submitted_at is not None:
             row.submitted_at = submitted_at
         self.session.flush()

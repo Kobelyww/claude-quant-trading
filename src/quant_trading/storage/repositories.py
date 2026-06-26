@@ -12,12 +12,14 @@ from quant_trading.storage.models import (
     AgentCandidateReviewORM,
     AgentRunORM,
     BrokerOrderEventORM,
+    DataQualityReportORM,
     DataSyncRunORM,
     InstrumentORM,
     JobEventORM,
     JobRunORM,
     JobScheduleORM,
     MarketBarORM,
+    ResearchValidationReportORM,
     WorkflowRunORM,
 )
 
@@ -947,6 +949,30 @@ class AgentCandidateReviewRepository:
         self.session.flush()
         return row
 
+    def link_data_quality_report(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        data_quality_report_id: int,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.data_quality_report_id = data_quality_report_id
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
+    def link_research_validation_report(
+        self,
+        row: AgentCandidateReviewORM,
+        *,
+        research_validation_report_id: int,
+        updated_at: datetime,
+    ) -> AgentCandidateReviewORM:
+        row.research_validation_report_id = research_validation_report_id
+        row.updated_at = updated_at
+        self.session.flush()
+        return row
+
     def get(self, review_id: int) -> AgentCandidateReviewORM | None:
         return self.session.get(AgentCandidateReviewORM, review_id)
 
@@ -980,3 +1006,253 @@ class AgentCandidateReviewRepository:
                 AgentCandidateReviewORM.strategy_name == strategy_name
             )
         return list(self.session.scalars(statement).all())
+
+
+class DataQualityReportRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_running(
+        self,
+        *,
+        candidate_review_id: int | None,
+        backtest_run_id: int | None,
+        job_run_id: int | None,
+        symbol: str,
+        source: str,
+        adjusted: str,
+        start_date: date | None,
+        end_date: date | None,
+        created_at: datetime,
+    ) -> DataQualityReportORM:
+        row = DataQualityReportORM(
+            candidate_review_id=candidate_review_id,
+            backtest_run_id=backtest_run_id,
+            job_run_id=job_run_id,
+            symbol=symbol,
+            source=source,
+            adjusted=adjusted,
+            start_date=start_date,
+            end_date=end_date,
+            bar_count=0,
+            expected_bar_count=0,
+            missing_bar_count=0,
+            duplicate_timestamp_count=0,
+            non_positive_price_count=0,
+            non_positive_volume_count=0,
+            invalid_ohlc_count=0,
+            stale_data=False,
+            data_fingerprint="",
+            status="running",
+            severity="unknown",
+            findings_payload="{}",
+            error_message=None,
+            created_at=created_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def mark_completed(
+        self,
+        row: DataQualityReportORM,
+        *,
+        status: str,
+        severity: str,
+        bar_count: int,
+        expected_bar_count: int,
+        missing_bar_count: int,
+        duplicate_timestamp_count: int,
+        non_positive_price_count: int,
+        non_positive_volume_count: int,
+        invalid_ohlc_count: int,
+        stale_data: bool,
+        data_fingerprint: str,
+        findings_payload: str,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> DataQualityReportORM:
+        row.status = status
+        row.severity = severity
+        row.bar_count = bar_count
+        row.expected_bar_count = expected_bar_count
+        row.missing_bar_count = missing_bar_count
+        row.duplicate_timestamp_count = duplicate_timestamp_count
+        row.non_positive_price_count = non_positive_price_count
+        row.non_positive_volume_count = non_positive_volume_count
+        row.invalid_ohlc_count = invalid_ohlc_count
+        row.stale_data = stale_data
+        row.data_fingerprint = data_fingerprint
+        row.findings_payload = findings_payload
+        row.error_message = None
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def mark_failed(
+        self,
+        row: DataQualityReportORM,
+        error_message: str,
+        *,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> DataQualityReportORM:
+        row.status = "failed"
+        row.severity = "high"
+        row.error_message = error_message[:1000]
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        candidate_review_id: int | None = None,
+        symbol: str | None = None,
+        status: str | None = None,
+        severity: str | None = None,
+        limit: int = 50,
+    ) -> list[DataQualityReportORM]:
+        statement = select(DataQualityReportORM).order_by(
+            DataQualityReportORM.id.desc()
+        ).limit(limit)
+        if candidate_review_id is not None:
+            statement = statement.where(
+                DataQualityReportORM.candidate_review_id == candidate_review_id
+            )
+        if symbol:
+            statement = statement.where(DataQualityReportORM.symbol == symbol)
+        if status:
+            statement = statement.where(DataQualityReportORM.status == status)
+        if severity:
+            statement = statement.where(DataQualityReportORM.severity == severity)
+        return list(self.session.scalars(statement).all())
+
+    def get(self, report_id: int) -> DataQualityReportORM | None:
+        return self.session.get(DataQualityReportORM, report_id)
+
+
+class ResearchValidationReportRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_or_reset_running(
+        self,
+        *,
+        candidate_review_id: int,
+        source_backtest_run_id: int,
+        data_quality_report_id: int | None,
+        job_run_id: int | None,
+        symbol: str,
+        strategy_name: str,
+        started_at: datetime,
+    ) -> ResearchValidationReportORM:
+        row = self.get_by_candidate_review_id(candidate_review_id)
+        if row is None:
+            row = ResearchValidationReportORM(candidate_review_id=candidate_review_id)
+            self.session.add(row)
+
+        row.source_backtest_run_id = source_backtest_run_id
+        row.data_quality_report_id = data_quality_report_id
+        row.job_run_id = job_run_id
+        row.symbol = symbol
+        row.strategy_name = strategy_name
+        row.validation_status = "running"
+        row.readiness_floor = "not_ready"
+        row.in_sample_metrics_payload = "{}"
+        row.out_of_sample_metrics_payload = "{}"
+        row.walk_forward_payload = "{}"
+        row.parameter_sensitivity_payload = "{}"
+        row.benchmark_payload = "{}"
+        row.summary_payload = "{}"
+        row.error_message = None
+        row.created_at = started_at
+        row.finished_at = None
+        row.duration_ms = None
+        self.session.flush()
+        return row
+
+    def mark_completed(
+        self,
+        row: ResearchValidationReportORM,
+        *,
+        validation_status: str,
+        readiness_floor: str,
+        data_quality_report_id: int | None,
+        in_sample_metrics_payload: str,
+        out_of_sample_metrics_payload: str,
+        walk_forward_payload: str,
+        parameter_sensitivity_payload: str,
+        benchmark_payload: str,
+        summary_payload: str,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> ResearchValidationReportORM:
+        row.validation_status = validation_status
+        row.readiness_floor = readiness_floor
+        row.data_quality_report_id = data_quality_report_id
+        row.in_sample_metrics_payload = in_sample_metrics_payload
+        row.out_of_sample_metrics_payload = out_of_sample_metrics_payload
+        row.walk_forward_payload = walk_forward_payload
+        row.parameter_sensitivity_payload = parameter_sensitivity_payload
+        row.benchmark_payload = benchmark_payload
+        row.summary_payload = summary_payload
+        row.error_message = None
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def mark_failed(
+        self,
+        row: ResearchValidationReportORM,
+        error_message: str,
+        *,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> ResearchValidationReportORM:
+        row.validation_status = "failed"
+        row.readiness_floor = "not_ready"
+        row.error_message = error_message[:1000]
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        candidate_review_id: int | None = None,
+        symbol: str | None = None,
+        validation_status: str | None = None,
+        limit: int = 50,
+    ) -> list[ResearchValidationReportORM]:
+        statement = select(ResearchValidationReportORM).order_by(
+            ResearchValidationReportORM.id.desc()
+        ).limit(limit)
+        if candidate_review_id is not None:
+            statement = statement.where(
+                ResearchValidationReportORM.candidate_review_id == candidate_review_id
+            )
+        if symbol:
+            statement = statement.where(ResearchValidationReportORM.symbol == symbol)
+        if validation_status:
+            statement = statement.where(
+                ResearchValidationReportORM.validation_status == validation_status
+            )
+        return list(self.session.scalars(statement).all())
+
+    def get(self, report_id: int) -> ResearchValidationReportORM | None:
+        return self.session.get(ResearchValidationReportORM, report_id)
+
+    def get_by_candidate_review_id(
+        self,
+        candidate_review_id: int,
+    ) -> ResearchValidationReportORM | None:
+        return self.session.scalar(
+            select(ResearchValidationReportORM).where(
+                ResearchValidationReportORM.candidate_review_id == candidate_review_id
+            )
+        )

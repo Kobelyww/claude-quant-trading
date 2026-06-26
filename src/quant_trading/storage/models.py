@@ -5,6 +5,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -434,7 +435,111 @@ class AgentCandidateReviewORM(Base):
         nullable=True,
         index=True,
     )
+    data_quality_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("data_quality_reports.id"),
+        nullable=True,
+        index=True,
+    )
+    research_validation_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("research_validation_reports.id"),
+        nullable=True,
+        index=True,
+    )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class DataQualityReportORM(Base):
+    __tablename__ = "data_quality_reports"
+    __table_args__ = (
+        Index(
+            "ix_data_quality_reports_symbol_start_date_end_date",
+            "symbol",
+            "start_date",
+            "end_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    candidate_review_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_candidate_reviews.id"),
+        nullable=True,
+        index=True,
+    )
+    backtest_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("backtest_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    job_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(64), default="")
+    adjusted: Mapped[str] = mapped_column(String(16), default="")
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    bar_count: Mapped[int] = mapped_column(Integer, default=0)
+    expected_bar_count: Mapped[int] = mapped_column(Integer, default=0)
+    missing_bar_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_timestamp_count: Mapped[int] = mapped_column(Integer, default=0)
+    non_positive_price_count: Mapped[int] = mapped_column(Integer, default=0)
+    non_positive_volume_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_ohlc_count: Mapped[int] = mapped_column(Integer, default=0)
+    stale_data: Mapped[bool] = mapped_column(Boolean, default=False)
+    data_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    severity: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
+    findings_payload: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ResearchValidationReportORM(Base):
+    __tablename__ = "research_validation_reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_review_id",
+            name="uq_research_validation_reports_candidate_review_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    candidate_review_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_candidate_reviews.id"),
+        index=True,
+    )
+    source_backtest_run_id: Mapped[int] = mapped_column(
+        ForeignKey("backtest_runs.id"),
+        index=True,
+    )
+    data_quality_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("data_quality_reports.id"),
+        nullable=True,
+        index=True,
+    )
+    job_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    strategy_name: Mapped[str] = mapped_column(String(128), index=True)
+    validation_status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    readiness_floor: Mapped[str] = mapped_column(String(32), default="not_ready")
+    in_sample_metrics_payload: Mapped[str] = mapped_column(Text, default="{}")
+    out_of_sample_metrics_payload: Mapped[str] = mapped_column(Text, default="{}")
+    walk_forward_payload: Mapped[str] = mapped_column(Text, default="{}")
+    parameter_sensitivity_payload: Mapped[str] = mapped_column(Text, default="{}")
+    benchmark_payload: Mapped[str] = mapped_column(Text, default="{}")
+    summary_payload: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

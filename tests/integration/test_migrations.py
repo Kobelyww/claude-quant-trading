@@ -30,6 +30,8 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
     assert "broker_order_events" in tables
     assert "agent_runs" in tables
     assert "agent_candidate_reviews" in tables
+    assert "data_quality_reports" in tables
+    assert "research_validation_reports" in tables
 
     schedule_columns = {column["name"] for column in inspector.get_columns("job_schedules")}
     assert {"locked_until", "locked_by", "lock_acquired_at"} <= schedule_columns
@@ -68,8 +70,66 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
         "backtest_job_run_id",
         "backtest_run_id",
         "review_agent_run_id",
+        "data_quality_report_id",
+        "research_validation_report_id",
         "error_message",
         "created_at",
         "updated_at",
         "decided_at",
     } <= candidate_review_columns
+
+    data_quality_report_columns = {
+        column["name"] for column in inspector.get_columns("data_quality_reports")
+    }
+    assert {
+        "id",
+        "candidate_review_id",
+        "backtest_run_id",
+        "job_run_id",
+        "symbol",
+        "source",
+        "adjusted",
+        "start_date",
+        "end_date",
+        "bar_count",
+        "expected_bar_count",
+        "missing_bar_count",
+        "duplicate_timestamp_count",
+        "non_positive_price_count",
+        "non_positive_volume_count",
+        "invalid_ohlc_count",
+        "stale_data",
+        "data_fingerprint",
+        "status",
+        "severity",
+        "findings_payload",
+        "error_message",
+        "created_at",
+        "finished_at",
+        "duration_ms",
+    } <= data_quality_report_columns
+
+    research_validation_report_columns = {
+        column["name"] for column in inspector.get_columns("research_validation_reports")
+    }
+    assert {
+        "id",
+        "candidate_review_id",
+        "source_backtest_run_id",
+        "data_quality_report_id",
+        "job_run_id",
+        "symbol",
+        "strategy_name",
+        "validation_status",
+        "readiness_floor",
+        "in_sample_metrics_payload",
+        "out_of_sample_metrics_payload",
+        "walk_forward_payload",
+        "parameter_sensitivity_payload",
+        "benchmark_payload",
+        "summary_payload",
+        "error_message",
+        "created_at",
+        "finished_at",
+        "duration_ms",
+    } <= research_validation_report_columns

@@ -10,6 +10,7 @@ from typing import Any, Generic, TypeVar
 
 from sqlalchemy import Engine
 
+from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.repositories import WorkflowRunRepository
 
@@ -111,8 +112,7 @@ def workflow_payload_dumps(payload: dict[str, Any]) -> str:
 
 
 def sanitize_workflow_error(exc: Exception) -> str:
-    message = str(exc) or exc.__class__.__name__
-    return message[:1000]
+    return sanitize_error_message(exc)
 
 
 def record_failed_workflow_command(
@@ -132,7 +132,7 @@ def record_failed_workflow_command(
         )
         repo.mark_failed(
             run,
-            error_message=error_message[:1000],
+            error_message=sanitize_error_message(error_message),
             finished_at=_utcnow(),
             duration_ms=_duration_ms(started_counter),
         )

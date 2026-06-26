@@ -12,6 +12,7 @@ from quant_trading.jobs.runtime import (
     job_payload_dumps,
     utcnow,
 )
+from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import JobRunORM
 from quant_trading.storage.repositories import JobEventRepository, JobRunRepository
@@ -58,7 +59,20 @@ def submit_job_run(
             queue = queue_factory(settings.redis_url)
             rq_job = queue.enqueue(execute_job_run, settings.database_url, job_run_id)
         except Exception as exc:
-            message = str(exc) or exc.__class__.__name__
+            failed_at = utcnow()
+            message = sanitize_error_message(exc, settings=settings)
+            with session_scope(engine) as session:
+                repo = JobRunRepository(session)
+                row = repo.get(job_run_id)
+                if row is not None:
+                    repo.mark_failed(row, message, failed_at, duration_ms=0)
+                    JobEventRepository(session).record(
+                        row.id,
+                        "failed",
+                        message,
+                        progress=row.progress,
+                        created_at=failed_at,
+                    )
             raise JobSubmissionError(message, job_run_id=job_run_id) from exc
         with session_scope(engine) as session:
             repo = JobRunRepository(session)

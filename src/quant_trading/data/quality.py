@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from quant_trading.core.models import Bar
+from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import InstrumentORM, MarketBarORM
 from quant_trading.storage.repositories import (
@@ -270,7 +271,7 @@ def build_data_quality_report(
             if report is not None:
                 reports.mark_failed(
                     report,
-                    str(exc),
+                    sanitize_error_message(exc),
                     finished_at=finished_at,
                     duration_ms=_duration_ms(started_at, finished_at),
                 )

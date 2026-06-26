@@ -33,6 +33,7 @@ from quant_trading.agents.strategy_idea import (
     parse_strategy_idea_response,
 )
 from quant_trading.config import AppSettings
+from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
@@ -117,7 +118,7 @@ def run_market_analysis_agent(
             if row is not None:
                 AgentRunRepository(session).mark_failed(
                     row,
-                    _sanitize_error(exc),
+                    _sanitize_error(exc, settings=settings),
                     finished_at=finished_at,
                     duration_ms=_duration_ms(started_counter),
                 )
@@ -211,7 +212,7 @@ def run_strategy_idea_agent(
             if row is not None:
                 AgentRunRepository(session).mark_failed(
                     row,
-                    _sanitize_error(exc),
+                    _sanitize_error(exc, settings=settings),
                     finished_at=finished_at,
                     duration_ms=_duration_ms(started_counter),
                 )
@@ -341,7 +342,7 @@ def run_backtest_review_agent(
                 if row is not None:
                     agent_repo.mark_failed(
                         row,
-                        _sanitize_error(exc),
+                        _sanitize_error(exc, settings=settings),
                         finished_at=finished_at,
                         duration_ms=_duration_ms(started_counter),
                     )
@@ -350,7 +351,7 @@ def run_backtest_review_agent(
                     review_repo.mark_review_failed(
                         review,
                         review_agent_run_id=agent_run_id,
-                        error_message=_sanitize_error(exc),
+                        error_message=_sanitize_error(exc, settings=settings),
                         updated_at=finished_at,
                     )
         raise
@@ -380,8 +381,8 @@ def _json_dumps(payload: dict[str, Any]) -> str:
     )
 
 
-def _sanitize_error(exc: Exception) -> str:
-    return (str(exc) or exc.__class__.__name__)[:ERROR_MAX_CHARS]
+def _sanitize_error(exc: Exception, *, settings: AppSettings | None = None) -> str:
+    return sanitize_error_message(exc, settings=settings, max_chars=ERROR_MAX_CHARS)
 
 
 def _utcnow() -> datetime:

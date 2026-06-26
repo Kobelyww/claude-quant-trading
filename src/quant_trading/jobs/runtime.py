@@ -25,6 +25,7 @@ from quant_trading.data.quality import build_data_quality_report
 from quant_trading.data.providers.registry import build_default_provider_registry
 from quant_trading.data.sync import sync_daily_market_data
 from quant_trading.jobs.cancellation import CancellationToken, JobCancelled
+from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import make_engine, session_scope
 from quant_trading.validation.research import run_candidate_research_validation
 from quant_trading.storage.repositories import JobEventRepository, JobRunRepository
@@ -356,4 +357,4 @@ def _duration_ms(started_counter: float) -> int:
 
 
 def _sanitize_error(exc: Exception) -> str:
-    return (str(exc) or exc.__class__.__name__)[:1000]
+    return sanitize_error_message(exc)

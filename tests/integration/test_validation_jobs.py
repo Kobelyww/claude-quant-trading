@@ -361,6 +361,53 @@ def test_run_candidate_research_validation_creates_no_paper_or_broker_rows():
     assert broker_event_count == 0
 
 
+def test_run_candidate_research_validation_redacts_walk_forward_error_payload(monkeypatch):
+    from quant_trading.validation import research as research_module
+
+    engine = _create_engine()
+    candidate_review_id, _ = _seed_valid_candidate(engine)
+    sentinel_start = date(2099, 1, 1)
+    sentinel_end = date(2099, 3, 1)
+
+    def fake_run_ma_cross_metrics(*args, **kwargs):
+        if kwargs.get("start") == sentinel_start:
+            raise RuntimeError("provider failed Authorization: Bearer wf-secret-token")
+        return {"return_pct": "1.0", "max_drawdown": "0.10"}
+
+    monkeypatch.setattr(
+        research_module,
+        "_walk_forward_windows",
+        lambda bars: [(sentinel_start, sentinel_end)],
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_run_ma_cross_metrics",
+        fake_run_ma_cross_metrics,
+    )
+
+    result = run_candidate_research_validation(
+        engine,
+        candidate_review_id=candidate_review_id,
+    )
+
+    with session_scope(engine) as session:
+        report = session.get(
+            ResearchValidationReportORM,
+            result["research_validation_report_id"],
+        )
+        assert report is not None
+        walk_forward = json.loads(report.walk_forward_payload)
+
+    errors = [
+        str(window.get("error") or "")
+        for window in walk_forward["windows"]
+        if window.get("status") == "failed"
+    ]
+    assert errors
+    assert all("wf-secret-token" not in error for error in errors)
+    assert all("[REDACTED]" in error for error in errors)
+
+
 def test_determine_status_negative_oos_return_caps_to_not_ready():
     validation_status, readiness_floor, reasons = _determine_status(
         data_quality_status="passed",

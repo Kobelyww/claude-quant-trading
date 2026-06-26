@@ -13,6 +13,7 @@ from quant_trading.backtest.engine import BacktestEngine
 from quant_trading.core.models import Bar
 from quant_trading.data.quality import build_data_quality_report
 from quant_trading.jobs.cancellation import CancellationToken
+from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import AgentCandidateReviewORM, BacktestRunORM
 from quant_trading.storage.repositories import (
@@ -257,7 +258,7 @@ def run_candidate_research_validation(
                 if report is not None:
                     ResearchValidationReportRepository(session).mark_failed(
                         report,
-                        str(exc),
+                        sanitize_error_message(exc),
                         finished_at=finished_at,
                         duration_ms=_duration_ms(started_counter),
                     )
@@ -432,7 +433,7 @@ def _build_walk_forward_payload(
                     "start": start,
                     "end": end,
                     "status": "failed",
-                    "error": str(exc)[:500],
+                    "error": sanitize_error_message(exc, max_chars=500),
                 }
             )
     return {

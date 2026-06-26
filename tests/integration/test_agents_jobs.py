@@ -291,6 +291,51 @@ def test_run_backtest_review_agent_caps_readiness_by_validation_floor():
     assert result["data_quality_report_id"] == data_quality_report_id
 
 
+def test_backtest_review_agent_failure_redacts_configured_secret_from_persistence_and_api():
+    class FailingLLMClient:
+        model = "fake-llm"
+
+        def complete(self, prompt: str):
+            raise RuntimeError(
+                "upstream rejected sk-test-secret-123 with Authorization bearer"
+            )
+
+    secret = "sk-test-secret-123"
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id, backtest_run_id = _seed_backtest_review_candidate(engine)
+    _link_validation_reports(engine, candidate_review_id, readiness_floor="not_ready")
+    settings = AppSettings(job_executor="inline", deepseek_api_key=secret)
+
+    with pytest.raises(RuntimeError):
+        run_backtest_review_agent(
+            engine,
+            BacktestReviewRequest(
+                candidate_review_id=candidate_review_id,
+                backtest_run_id=backtest_run_id,
+            ),
+            llm_client=FailingLLMClient(),
+            settings=settings,
+        )
+
+    client = TestClient(create_app(engine=engine, settings=settings))
+    with session_scope(engine) as session:
+        agent_run = session.scalar(
+            select(AgentRunORM).where(AgentRunORM.agent_type == "backtest_review")
+        )
+        assert agent_run is not None
+        agent_error = agent_run.error_message or ""
+        review = AgentCandidateReviewRepository(session).get(candidate_review_id)
+        assert review is not None
+        review_error = review.error_message or ""
+
+    api_error = client.get(f"/agent-runs/{agent_run.id}").json()["error_message"]
+    assert secret not in agent_error
+    assert secret not in review_error
+    assert secret not in api_error
+    assert "[REDACTED]" in agent_error
+
+
 def test_run_backtest_review_agent_rejects_non_succeeded_candidate_without_trading_rows():
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)

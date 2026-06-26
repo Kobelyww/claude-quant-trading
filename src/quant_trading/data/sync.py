@@ -12,6 +12,7 @@ from quant_trading.core.models import Bar
 from quant_trading.data.providers.registry import ProviderRegistry, build_default_provider_registry
 from quant_trading.data.validation import validate_bars
 from quant_trading.jobs.cancellation import CancellationToken
+from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.repositories import (
     DataSyncRunRepository,
@@ -221,4 +222,4 @@ def _duration_ms(started_counter: float) -> int:
 
 
 def _sanitize_error(exc: Exception) -> str:
-    return (str(exc) or exc.__class__.__name__)[:1000]
+    return sanitize_error_message(exc)

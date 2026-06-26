@@ -1,3 +1,6 @@
+import json
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -6,14 +9,33 @@ from sqlalchemy import select
 from quant_trading.api.main import create_app
 from quant_trading.config import AppSettings
 from quant_trading.storage.db import create_all, make_engine, session_scope
-from quant_trading.storage.models import JobRunORM
+from quant_trading.storage.models import (
+    AgentCandidateReviewORM,
+    AgentRunORM,
+    BacktestEquityPointORM,
+    BacktestRunORM,
+    DataQualityReportORM,
+    JobEventORM,
+    JobRunORM,
+    ResearchValidationReportORM,
+)
 
 
-def make_client(settings: AppSettings | None = None):
+def make_client(
+    settings: AppSettings | None = None,
+    *,
+    raise_server_exceptions: bool = True,
+):
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
     settings = settings or AppSettings(job_executor="inline")
-    return TestClient(create_app(engine=engine, settings=settings)), engine
+    return (
+        TestClient(
+            create_app(engine=engine, settings=settings),
+            raise_server_exceptions=raise_server_exceptions,
+        ),
+        engine,
+    )
 
 
 def test_inline_import_job_api_returns_succeeded_job(legacy_sqlite_db: Path):
@@ -65,7 +87,7 @@ def test_rq_executor_enqueues_without_running(monkeypatch, legacy_sqlite_db: Pat
 
     monkeypatch.setattr(jobs_route, "make_queue", lambda redis_url: fake_queue)
     settings = AppSettings(job_executor="rq", redis_url="redis://fake:6379/0")
-    client, engine = make_client(settings=settings)
+    client, engine = make_client(settings=settings, raise_server_exceptions=False)
 
     response = client.post("/jobs/import-legacy", json={"legacy_db_path": str(legacy_sqlite_db)})
 
@@ -78,6 +100,61 @@ def test_rq_executor_enqueues_without_running(monkeypatch, legacy_sqlite_db: Pat
         row = session.get(JobRunORM, payload["id"])
         assert row.status == "queued"
         assert row.rq_job_id == "rq-test-1"
+
+
+def test_validation_research_rq_enqueue_failure_marks_created_job_failed(monkeypatch):
+    class FailingQueue:
+        def enqueue(self, func, database_url, job_run_id):
+            raise RuntimeError("rq enqueue unavailable")
+
+    from quant_trading.api.routes import jobs as jobs_route
+
+    monkeypatch.setattr(jobs_route, "make_queue", lambda redis_url: FailingQueue())
+    settings = AppSettings(job_executor="rq", redis_url="redis://fake:6379/0")
+    client, engine = make_client(settings=settings, raise_server_exceptions=False)
+
+    response = client.post("/jobs/validation/research", json={"candidate_review_id": 1})
+
+    assert response.status_code == 500
+    with session_scope(engine) as session:
+        job = session.scalar(select(JobRunORM))
+        assert job is not None
+        assert job.job_type == "research_validation"
+        assert job.status == "failed"
+        assert job.error_message == "rq enqueue unavailable"
+        assert [event.event_type for event in session.scalars(select(JobEventORM))] == [
+            "queued",
+            "failed",
+        ]
+
+
+def test_backtest_review_rq_enqueue_failure_marks_created_job_failed(monkeypatch):
+    class FailingQueue:
+        def enqueue(self, func, database_url, job_run_id):
+            raise RuntimeError("rq enqueue unavailable")
+
+    from quant_trading.api.routes import jobs as jobs_route
+    monkeypatch.setattr(jobs_route, "make_queue", lambda redis_url: FailingQueue())
+    settings = AppSettings(job_executor="rq", redis_url="redis://fake:6379/0")
+    client, engine = make_client(settings=settings, raise_server_exceptions=False)
+    candidate_review_id = _seed_review_candidate_with_validation(engine)
+
+    response = client.post(
+        "/jobs/agents/backtest-review",
+        json={"candidate_review_id": candidate_review_id},
+    )
+
+    assert response.status_code == 500
+    with session_scope(engine) as session:
+        job = session.scalar(select(JobRunORM))
+        assert job is not None
+        assert job.job_type == "agent_backtest_review"
+        assert job.status == "failed"
+        assert job.error_message == "rq enqueue unavailable"
+        assert [event.event_type for event in session.scalars(select(JobEventORM))] == [
+            "queued",
+            "failed",
+        ]
 
 
 def test_jobs_require_auth_when_enabled():
@@ -164,3 +241,109 @@ def test_job_cancel_api_cancels_queued_job_and_events_api_lists_timeline():
     assert cancel_response.json()["status"] == "cancelled"
     assert events_response.status_code == 200
     assert [row["event_type"] for row in events_response.json()] == ["queued", "cancelled"]
+
+
+def _seed_review_candidate_with_validation(engine) -> int:
+    now = datetime(2026, 6, 24, 9, 0, 0)
+    with session_scope(engine) as session:
+        source = AgentRunORM(
+            agent_type="strategy_idea",
+            status="succeeded",
+            symbol="000001",
+            model_name="fake-llm",
+            request_payload="{}",
+            metrics_payload="{}",
+            result_payload="{}",
+            started_at=now,
+            finished_at=now,
+            duration_ms=1,
+            created_at=now,
+        )
+        session.add(source)
+        session.flush()
+        backtest = BacktestRunORM(
+            strategy_name="ma_cross",
+            symbol="000001",
+            initial_cash=Decimal("100000.000000"),
+            final_equity=Decimal("102000.000000"),
+            status="done",
+            created_at=now,
+        )
+        session.add(backtest)
+        session.flush()
+        session.add(
+            BacktestEquityPointORM(
+                run_id=backtest.id,
+                timestamp=date(2026, 1, 1),
+                equity=Decimal("100000.000000"),
+                cash=Decimal("100000.000000"),
+                market_value=Decimal("0.000000"),
+                drawdown=Decimal("0.000000"),
+            )
+        )
+        review = AgentCandidateReviewORM(
+            source_agent_run_id=source.id,
+            status="backtest_succeeded",
+            symbol="000001",
+            strategy_name="ma_cross",
+            candidate_payload=json.dumps({"strategy_name": "ma_cross"}, sort_keys=True),
+            backtest_request_payload=json.dumps(
+                {"job_type": "backtest_ma_cross", "payload": {"symbol": "000001"}},
+                sort_keys=True,
+            ),
+            backtest_run_id=backtest.id,
+            operator="local",
+            operator_note="approved",
+            decided_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(review)
+        session.flush()
+        data_quality = DataQualityReportORM(
+            candidate_review_id=review.id,
+            backtest_run_id=backtest.id,
+            symbol="000001",
+            source="test",
+            adjusted="qfq",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 1),
+            bar_count=1,
+            expected_bar_count=1,
+            missing_bar_count=0,
+            duplicate_timestamp_count=0,
+            non_positive_price_count=0,
+            non_positive_volume_count=0,
+            invalid_ohlc_count=0,
+            stale_data=False,
+            data_fingerprint="test",
+            status="passed",
+            severity="none",
+            findings_payload="{}",
+            created_at=now,
+            finished_at=now,
+            duration_ms=1,
+        )
+        session.add(data_quality)
+        session.flush()
+        validation = ResearchValidationReportORM(
+            candidate_review_id=review.id,
+            source_backtest_run_id=backtest.id,
+            data_quality_report_id=data_quality.id,
+            symbol="000001",
+            strategy_name="ma_cross",
+            validation_status="passed",
+            readiness_floor="not_ready",
+            summary_payload=json.dumps(
+                {"readiness_floor": "not_ready", "research_only": True},
+                sort_keys=True,
+            ),
+            created_at=now,
+            finished_at=now,
+            duration_ms=1,
+        )
+        session.add(validation)
+        session.flush()
+        review.data_quality_report_id = data_quality.id
+        review.research_validation_report_id = validation.id
+        return review.id

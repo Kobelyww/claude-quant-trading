@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 import hashlib
 import json
@@ -49,13 +49,17 @@ def assess_bars_quality(
     )
 
     bar_count = len(selected_bars)
-    expected_bar_count = (
-        _weekday_count(start_date, end_date)
+    expected_weekdays = (
+        _weekdays(start_date, end_date)
         if start_date is not None and end_date is not None and start_date <= end_date
-        else 0
+        else set()
     )
-    missing_bar_count = max(0, expected_bar_count - bar_count)
+    expected_bar_count = len(expected_weekdays)
     timestamps = [_bar_date(bar.timestamp) for bar in selected_bars]
+    observed_weekdays = {
+        timestamp for timestamp in timestamps if timestamp.weekday() < 5
+    }
+    missing_bar_count = len(expected_weekdays - observed_weekdays)
     duplicate_timestamp_count = sum(
         count - 1 for count in Counter(timestamps).values() if count > 1
     )
@@ -274,15 +278,17 @@ def build_data_quality_report(
 
 
 def _weekday_count(start: date, end: date) -> int:
+    return len(_weekdays(start, end))
+
+
+def _weekdays(start: date, end: date) -> set[date]:
     if end < start:
-        return 0
-    days = (end - start).days + 1
-    full_weeks, remainder = divmod(days, 7)
-    count = full_weeks * 5
-    for offset in range(remainder):
-        if (start.weekday() + offset) % 7 < 5:
-            count += 1
-    return count
+        return set()
+    return {
+        start + timedelta(days=offset)
+        for offset in range((end - start).days + 1)
+        if (start + timedelta(days=offset)).weekday() < 5
+    }
 
 
 def _list_raw_market_bars(

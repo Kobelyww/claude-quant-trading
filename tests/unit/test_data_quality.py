@@ -32,14 +32,25 @@ def make_bar(
     )
 
 
+def weekdays_from(start: date, count: int) -> list[date]:
+    days: list[date] = []
+    current = start
+    while len(days) < count:
+        if current.weekday() < 5:
+            days.append(current)
+        current += timedelta(days=1)
+    return days
+
+
 def test_assess_bars_quality_passes_clean_data():
     start = date(2026, 1, 1)
-    bars = [make_bar(start + timedelta(days=day)) for day in range(120)]
+    weekdays = weekdays_from(start, 120)
+    bars = [make_bar(day) for day in weekdays]
 
     report = assess_bars_quality(
         bars,
         requested_start=start,
-        requested_end=start + timedelta(days=119),
+        requested_end=weekdays[-1],
         now=date(2026, 5, 10),
     )
 
@@ -102,20 +113,52 @@ def test_assess_bars_quality_fails_invalid_ohlc():
 
 def test_assess_bars_quality_flags_medium_missing_coverage():
     start = date(2026, 1, 1)
-    weekdays = [
-        start + timedelta(days=day)
-        for day in range(180)
-        if (start + timedelta(days=day)).weekday() < 5
-    ]
+    weekdays = weekdays_from(start, 128)
     bars = [make_bar(day) for index, day in enumerate(weekdays) if index >= 8]
 
     report = assess_bars_quality(
         bars,
         requested_start=start,
-        requested_end=start + timedelta(days=179),
+        requested_end=weekdays[-1],
         now=date(2026, 5, 10),
     )
 
+    assert report["missing_bar_count"] == 8
+    assert report["status"] == "needs_review"
+    assert report["severity"] == "medium"
+
+
+def test_assess_bars_quality_counts_missing_weekdays_distinctly():
+    start = date(2026, 1, 1)
+    weekdays = weekdays_from(start, 128)
+    missing_days = set(weekdays[:8])
+    weekend_days = [
+        start + timedelta(days=offset)
+        for offset in range((weekdays[-1] - start).days + 1)
+        if (start + timedelta(days=offset)).weekday() >= 5
+    ][:8]
+    bars = [make_bar(day) for day in weekdays[8:]]
+    bars.extend(make_bar(day) for day in weekend_days)
+
+    report = assess_bars_quality(
+        bars,
+        requested_start=start,
+        requested_end=weekdays[-1],
+        now=date(2026, 5, 10),
+    )
+
+    assert {day.isoformat() for day in missing_days} == {
+        "2026-01-01",
+        "2026-01-02",
+        "2026-01-05",
+        "2026-01-06",
+        "2026-01-07",
+        "2026-01-08",
+        "2026-01-09",
+        "2026-01-12",
+    }
+    assert report["bar_count"] == 128
+    assert report["duplicate_timestamp_count"] == 0
     assert report["missing_bar_count"] == 8
     assert report["status"] == "needs_review"
     assert report["severity"] == "medium"

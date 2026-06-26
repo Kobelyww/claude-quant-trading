@@ -19,7 +19,10 @@ from quant_trading.storage.repositories import (
     InstrumentRepository,
     MarketDataRepository,
 )
-from quant_trading.validation.research import run_candidate_research_validation
+from quant_trading.validation.research import (
+    _determine_status,
+    run_candidate_research_validation,
+)
 
 
 SYMBOL = "000001"
@@ -208,6 +211,15 @@ def test_run_candidate_research_validation_persists_passed_report():
         assert report.parameter_sensitivity_payload != "{}"
         assert report.benchmark_payload != "{}"
         _assert_backtest_sections_include_run_ids(report)
+        benchmark = json.loads(report.benchmark_payload)
+        assert {
+            "strategy_return_pct",
+            "benchmark_return_pct",
+            "excess_return_pct",
+            "strategy_max_drawdown",
+            "benchmark_max_drawdown",
+            "passed",
+        } <= set(benchmark)
         candidate = session.get(AgentCandidateReviewORM, candidate_review_id)
         assert candidate.data_quality_report_id == result["data_quality_report_id"]
         assert candidate.research_validation_report_id == report.id
@@ -235,6 +247,11 @@ def test_run_candidate_research_validation_fails_when_data_quality_fails():
         assert report.out_of_sample_metrics_payload == "{}"
         assert report.walk_forward_payload == "{}"
         assert report.parameter_sensitivity_payload == "{}"
+        summary = json.loads(report.summary_payload)
+        assert summary["reasons"]
+        assert {
+            reason["code"] for reason in summary["reasons"]
+        } >= {"data_quality_failed", "insufficient_bars"}
 
 
 def test_run_candidate_research_validation_updates_existing_report_on_rerun():
@@ -267,3 +284,102 @@ def test_run_candidate_research_validation_creates_no_paper_or_broker_rows():
     assert before_broker_events == 0
     assert paper_run_count == 0
     assert broker_event_count == 0
+
+
+def test_determine_status_negative_oos_return_caps_to_not_ready():
+    validation_status, readiness_floor, reasons = _determine_status(
+        data_quality_status="passed",
+        out_of_sample_metrics={
+            "return_pct": "-0.1",
+            "max_drawdown": "0.10",
+        },
+        walk_forward_payload={
+            "windows": [
+                {"return_pct": "1.0"},
+                {"return_pct": "1.0"},
+            ],
+            "failures": 0,
+        },
+        parameter_sensitivity_payload={
+            "runs": [
+                {"short_window": 3, "long_window": 15, "return_pct": "1.0"},
+                {"short_window": 5, "long_window": 20, "return_pct": "1.0"},
+                {"short_window": 7, "long_window": 25, "return_pct": "1.0"},
+            ]
+        },
+        benchmark_payload={
+            "strategy_return_pct": "1.0",
+            "benchmark_return_pct": "1.0",
+        },
+        short_window=5,
+        long_window=20,
+    )
+
+    assert validation_status == "needs_review"
+    assert readiness_floor == "not_ready"
+    assert {reason["code"] for reason in reasons} == {"negative_oos_return"}
+
+
+def test_determine_status_requires_at_least_two_walk_forward_folds():
+    validation_status, readiness_floor, reasons = _determine_status(
+        data_quality_status="passed",
+        out_of_sample_metrics={
+            "return_pct": "1.0",
+            "max_drawdown": "0.10",
+        },
+        walk_forward_payload={
+            "windows": [{"return_pct": "1.0"}],
+            "failures": 0,
+        },
+        parameter_sensitivity_payload={
+            "runs": [
+                {"short_window": 3, "long_window": 15, "return_pct": "1.0"},
+                {"short_window": 5, "long_window": 20, "return_pct": "1.0"},
+                {"short_window": 7, "long_window": 25, "return_pct": "1.0"},
+            ]
+        },
+        benchmark_payload={
+            "strategy_return_pct": "1.0",
+            "benchmark_return_pct": "1.0",
+        },
+        short_window=5,
+        long_window=20,
+    )
+
+    assert validation_status == "needs_review"
+    assert readiness_floor == "not_ready"
+    assert {reason["code"] for reason in reasons} == {"insufficient_walk_forward_folds"}
+
+
+def test_determine_status_benchmark_underperformance_caps_to_needs_review():
+    validation_status, readiness_floor, reasons = _determine_status(
+        data_quality_status="passed",
+        out_of_sample_metrics={
+            "return_pct": "4.0",
+            "max_drawdown": "0.10",
+        },
+        walk_forward_payload={
+            "windows": [
+                {"return_pct": "1.0"},
+                {"return_pct": "1.0"},
+            ],
+            "failures": 0,
+        },
+        parameter_sensitivity_payload={
+            "runs": [
+                {"short_window": 3, "long_window": 15, "return_pct": "1.0"},
+                {"short_window": 5, "long_window": 20, "return_pct": "1.0"},
+                {"short_window": 7, "long_window": 25, "return_pct": "1.0"},
+            ]
+        },
+        benchmark_payload={
+            "strategy_return_pct": "4.0",
+            "benchmark_return_pct": "10.0",
+        },
+        short_window=5,
+        long_window=20,
+    )
+
+    assert validation_status == "needs_review"
+    assert readiness_floor == "needs_review"
+    assert {reason["code"] for reason in reasons} == {"benchmark_underperformance"}

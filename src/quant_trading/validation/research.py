@@ -17,6 +17,7 @@ from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import AgentCandidateReviewORM, BacktestRunORM
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
+    DataQualityReportRepository,
     MarketDataRepository,
     ResearchValidationReportRepository,
 )
@@ -193,15 +194,19 @@ def run_candidate_research_validation(
         )
         checkpoint(85, "completed parameter sensitivity")
 
-        benchmark_payload = buy_and_hold_benchmark(
-            bars,
+        benchmark_payload = _benchmark_comparison_payload(
+            out_of_sample_bars,
+            out_of_sample_metrics=out_of_sample_metrics,
             initial_cash=initial_cash,
-            commission_rate=DEFAULT_COMMISSION_RATE,
-            slippage_rate=DEFAULT_SLIPPAGE_RATE,
         )
-        validation_status, readiness_floor = _determine_status(
+        validation_status, readiness_floor, reasons = _determine_status(
+            data_quality_status=dq_result["status"],
             out_of_sample_metrics=out_of_sample_metrics,
             walk_forward_payload=walk_forward_payload,
+            parameter_sensitivity_payload=parameter_sensitivity_payload,
+            benchmark_payload=benchmark_payload,
+            short_window=short_window,
+            long_window=long_window,
         )
         summary_payload = {
             "candidate_review_id": candidate_review_id,
@@ -210,6 +215,7 @@ def run_candidate_research_validation(
             "data_quality_report_id": dq_report_id,
             "validation_status": validation_status,
             "readiness_floor": readiness_floor,
+            "reasons": reasons,
             "research_only": True,
         }
 
@@ -476,13 +482,124 @@ def _build_parameter_sensitivity_payload(
 
 def _determine_status(
     *,
+    data_quality_status: str,
     out_of_sample_metrics: dict[str, Any],
     walk_forward_payload: dict[str, Any],
-) -> tuple[str, str]:
-    return_pct = _decimal(out_of_sample_metrics.get("return_pct"))
-    if return_pct < Decimal("0") or walk_forward_payload.get("failures", 0) > 0:
-        return "needs_review", "needs_review"
-    return "passed", "ready_for_paper_research"
+    parameter_sensitivity_payload: dict[str, Any],
+    benchmark_payload: dict[str, Any],
+    short_window: int,
+    long_window: int,
+) -> tuple[str, str, list[dict[str, Any]]]:
+    reasons: list[dict[str, Any]] = []
+    if data_quality_status == "failed":
+        reasons.append({"code": "data_quality_failed", "status": data_quality_status})
+
+    oos_return = _decimal(out_of_sample_metrics.get("return_pct"))
+    if oos_return < Decimal("0"):
+        reasons.append(
+            {
+                "code": "negative_oos_return",
+                "return_pct": str(oos_return),
+            }
+        )
+
+    oos_max_drawdown = _decimal(out_of_sample_metrics.get("max_drawdown"))
+    if oos_max_drawdown > Decimal("0.20"):
+        reasons.append(
+            {
+                "code": "oos_drawdown_gt_20pct",
+                "max_drawdown": str(oos_max_drawdown),
+                "threshold": "0.20",
+            }
+        )
+
+    windows = list(walk_forward_payload.get("windows") or [])
+    failures = int(walk_forward_payload.get("failures") or 0)
+    if failures > 0:
+        reasons.append(
+            {
+                "code": "walk_forward_execution_failures",
+                "failure_count": failures,
+            }
+        )
+    if len(windows) < 2:
+        reasons.append(
+            {
+                "code": "insufficient_walk_forward_folds",
+                "fold_count": len(windows),
+                "minimum": 2,
+            }
+        )
+
+    negative_fold_count = sum(
+        1 for window in windows if _decimal(window.get("return_pct")) < Decimal("0")
+    )
+    if windows and negative_fold_count > (len(windows) / 2):
+        reasons.append(
+            {
+                "code": "majority_negative_walk_forward_returns",
+                "negative_fold_count": negative_fold_count,
+                "fold_count": len(windows),
+            }
+        )
+
+    sensitivity_runs = list(parameter_sensitivity_payload.get("runs") or [])
+    sensitivity_returns = [
+        _decimal(run.get("return_pct"))
+        for run in sensitivity_runs
+        if "return_pct" in run
+    ]
+    median_grid_return = _median_decimal(sensitivity_returns)
+    if median_grid_return is not None and median_grid_return < Decimal("0"):
+        reasons.append(
+            {
+                "code": "negative_parameter_sensitivity_median",
+                "median_return_pct": str(median_grid_return),
+            }
+        )
+    original_return = _original_parameter_return(
+        sensitivity_runs,
+        short_window=short_window,
+        long_window=long_window,
+    )
+    if (
+        original_return is not None
+        and median_grid_return is not None
+        and median_grid_return < Decimal("0")
+        and _is_top_decile(original_return, sensitivity_returns)
+    ):
+        reasons.append(
+            {
+                "code": "overfit_parameter_top_decile_negative_median",
+                "original_return_pct": str(original_return),
+                "median_return_pct": str(median_grid_return),
+            }
+        )
+
+    strategy_benchmark_return = _decimal(benchmark_payload.get("strategy_return_pct"))
+    buy_hold_return = _decimal(benchmark_payload.get("benchmark_return_pct"))
+    if "excess_return_pct" in benchmark_payload:
+        excess_return = _decimal(benchmark_payload.get("excess_return_pct"))
+    else:
+        excess_return = strategy_benchmark_return - buy_hold_return
+    if excess_return < Decimal("-5"):
+        reasons.append(
+            {
+                "code": "benchmark_underperformance",
+                "strategy_return_pct": str(strategy_benchmark_return),
+                "benchmark_return_pct": str(buy_hold_return),
+                "excess_return_pct": str(excess_return),
+                "threshold": "-5",
+            }
+        )
+
+    if any(reason["code"] == "data_quality_failed" for reason in reasons):
+        return "failed", "not_ready", reasons
+    if not reasons:
+        return "passed", "ready_for_paper_research", reasons
+    if all(reason["code"] == "benchmark_underperformance" for reason in reasons):
+        return "needs_review", "needs_review", reasons
+    return "needs_review", "not_ready", reasons
 
 
 def _complete_failed_data_quality_report(
@@ -502,6 +619,7 @@ def _complete_failed_data_quality_report(
         "validation_status": "failed",
         "readiness_floor": "not_ready",
         "error": "data quality failed",
+        "reasons": _data_quality_reasons(engine, dq_report_id),
         "research_only": True,
     }
     with session_scope(engine) as session:
@@ -575,6 +693,85 @@ def _decimal(value: Any) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return Decimal("0")
+
+
+def _benchmark_comparison_payload(
+    bars: list[Bar],
+    *,
+    out_of_sample_metrics: dict[str, Any],
+    initial_cash: Decimal,
+) -> dict[str, Any]:
+    benchmark = buy_and_hold_benchmark(
+        bars,
+        initial_cash=initial_cash,
+        commission_rate=DEFAULT_COMMISSION_RATE,
+        slippage_rate=DEFAULT_SLIPPAGE_RATE,
+    )
+    strategy_return = _decimal(out_of_sample_metrics.get("return_pct"))
+    benchmark_return = _decimal(benchmark.get("return_pct"))
+    excess_return = strategy_return - benchmark_return
+    strategy_drawdown = _decimal(out_of_sample_metrics.get("max_drawdown"))
+    benchmark_drawdown = _decimal(benchmark.get("max_drawdown"))
+    return {
+        **benchmark,
+        "strategy_return_pct": str(strategy_return),
+        "benchmark_return_pct": str(benchmark_return),
+        "excess_return_pct": str(excess_return),
+        "strategy_max_drawdown": str(strategy_drawdown),
+        "benchmark_max_drawdown": str(benchmark_drawdown),
+        "passed": excess_return >= Decimal("-5"),
+    }
+
+
+def _data_quality_reasons(engine: Engine, report_id: int) -> list[dict[str, Any]]:
+    reasons = [{"code": "data_quality_failed", "data_quality_report_id": report_id}]
+    with session_scope(engine) as session:
+        report = DataQualityReportRepository(session).get(report_id)
+        if report is None:
+            return reasons
+        findings_payload = _json_loads(report.findings_payload)
+    for finding in findings_payload.get("findings", []):
+        if isinstance(finding, dict) and finding.get("code"):
+            reasons.append(
+                {
+                    "code": str(finding["code"]),
+                    "severity": finding.get("severity"),
+                    "count": finding.get("count"),
+                }
+            )
+    return reasons
+
+
+def _median_decimal(values: list[Decimal]) -> Decimal | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / Decimal("2")
+
+
+def _original_parameter_return(
+    runs: list[dict[str, Any]],
+    *,
+    short_window: int,
+    long_window: int,
+) -> Decimal | None:
+    for run in runs:
+        if (
+            int(run.get("short_window", -1)) == short_window
+            and int(run.get("long_window", -1)) == long_window
+        ):
+            return _decimal(run.get("return_pct"))
+    return None
+
+
+def _is_top_decile(value: Decimal, values: list[Decimal]) -> bool:
+    if not values:
+        return False
+    better_or_equal = sum(1 for candidate in values if candidate >= value)
+    return (Decimal(better_or_equal) / Decimal(len(values))) <= Decimal("0.10")
 
 
 def _utcnow() -> datetime:

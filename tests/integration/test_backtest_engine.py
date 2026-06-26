@@ -1,9 +1,11 @@
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import select
 
 from quant_trading.backtest.engine import BacktestEngine
+from quant_trading.core.enums import Market
 from quant_trading.core.enums import OrderSide
 from quant_trading.core.models import OrderIntent
 from quant_trading.storage.db import create_all, make_engine, session_scope
@@ -14,6 +16,7 @@ from quant_trading.storage.models import (
     BacktestOrderORM,
     BacktestRunORM,
 )
+from quant_trading.storage.repositories import InstrumentRepository, MarketDataRepository
 from quant_trading.strategy.builtin.ma_cross import MACrossStrategy
 
 
@@ -56,6 +59,50 @@ def test_backtest_persists_equity_orders_and_fills(legacy_sqlite_db: Path):
     assert run.final_equity == result.final_equity
     assert run.status == "done"
     assert len(equity_points) == result.equity_points
+
+
+def test_backtest_engine_run_respects_date_bounds():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+
+    with session_scope(engine) as session:
+        instrument = InstrumentRepository(session).upsert_symbol(
+            symbol="000001",
+            name="Ping An Bank",
+            market=Market.A_STOCK,
+            asset_type="stock",
+            currency="CNY",
+            exchange="SZSE",
+        )
+        bars = MarketDataRepository(session)
+        for offset in range(10):
+            close = Decimal("10") + Decimal(offset)
+            bars.upsert_daily_bar(
+                instrument_id=instrument.id,
+                timestamp=date(2026, 1, 1) + timedelta(days=offset),
+                open=close,
+                high=close + Decimal("1"),
+                low=close - Decimal("1"),
+                close=close,
+                volume=Decimal("1000"),
+                source="test",
+                adjusted="qfq",
+            )
+
+    summary = BacktestEngine(
+        engine=engine,
+        initial_cash=Decimal("100000"),
+        commission_rate=Decimal("0.0003"),
+        slippage_rate=Decimal("0.001"),
+    ).run(
+        symbol="000001",
+        strategy=MACrossStrategy(short_window=2, long_window=3, order_size=100),
+        strategy_name="ma_cross",
+        start=date(2026, 1, 4),
+        end=date(2026, 1, 8),
+    )
+
+    assert summary.equity_points == 5
 
 
 class InvalidSellStrategy:

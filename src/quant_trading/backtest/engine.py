@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import Engine
@@ -41,9 +42,17 @@ class BacktestEngine:
             slippage_rate=slippage_rate,
         )
 
-    def run(self, symbol: str, strategy: Strategy, strategy_name: str) -> BacktestSummary:
+    def run(
+        self,
+        symbol: str,
+        strategy: Strategy,
+        strategy_name: str,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> BacktestSummary:
         with session_scope(self.engine) as session:
-            bars = MarketDataRepository(session).list_bars(symbol)
+            bars = MarketDataRepository(session).list_bars(symbol, start=start, end=end)
             run = BacktestRunORM(
                 strategy_name=strategy_name,
                 symbol=symbol,

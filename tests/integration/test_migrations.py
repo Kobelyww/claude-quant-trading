@@ -2,7 +2,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 
 def _inspector(database_url: str):
@@ -210,6 +210,198 @@ def _assert_validation_report_schema(inspector) -> None:
     ] == ("candidate_review_id",)
 
 
+def _assert_pre_live_safety_ops_schema(inspector) -> None:
+    tables = set(inspector.get_table_names())
+    assert {
+        "execution_safety_states",
+        "execution_order_intents",
+        "execution_order_decisions",
+        "operator_approval_requests",
+        "safety_incidents",
+        "kill_switch_events",
+    } <= tables
+
+    safety_columns = _columns(inspector, "execution_safety_states")
+    assert {
+        "id",
+        "scope",
+        "kill_switch_active",
+        "dry_run_enabled",
+        "simulated_enabled",
+        "live_enabled",
+        "reason",
+        "updated_by",
+        "updated_at",
+    } <= set(safety_columns)
+    safety_indexes = _index_columns(inspector, "execution_safety_states")
+    assert safety_indexes["ix_execution_safety_states_scope"] == ("scope",)
+    assert safety_indexes["ix_execution_safety_states_kill_switch_active"] == (
+        "kill_switch_active",
+    )
+    assert safety_indexes["ix_execution_safety_states_dry_run_enabled"] == (
+        "dry_run_enabled",
+    )
+    assert safety_indexes["ix_execution_safety_states_simulated_enabled"] == (
+        "simulated_enabled",
+    )
+    assert safety_indexes["ix_execution_safety_states_live_enabled"] == ("live_enabled",)
+    assert safety_indexes["ix_execution_safety_states_updated_at"] == ("updated_at",)
+    assert _unique_columns(inspector, "execution_safety_states")[
+        "uq_execution_safety_states_scope"
+    ] == ("scope",)
+
+    intent_columns = _columns(inspector, "execution_order_intents")
+    assert {
+        "id",
+        "source_type",
+        "source_id",
+        "paper_run_id",
+        "paper_order_id",
+        "client_order_id",
+        "symbol",
+        "instrument_id",
+        "side",
+        "order_type",
+        "quantity",
+        "limit_price",
+        "estimated_price",
+        "estimated_notional",
+        "broker_mode",
+        "status",
+        "risk_profile_name",
+        "risk_summary_payload",
+        "approval_required",
+        "approval_request_id",
+        "blocked_reason_code",
+        "blocked_reason",
+        "created_at",
+        "updated_at",
+        "submitted_at",
+    } <= set(intent_columns)
+    assert intent_columns["source_id"]["nullable"] is True
+    assert intent_columns["paper_run_id"]["nullable"] is True
+    assert intent_columns["paper_order_id"]["nullable"] is True
+    assert intent_columns["approval_request_id"]["nullable"] is True
+    intent_indexes = _index_columns(inspector, "execution_order_intents")
+    for name, columns in {
+        "ix_execution_order_intents_source_type": ("source_type",),
+        "ix_execution_order_intents_source_id": ("source_id",),
+        "ix_execution_order_intents_paper_run_id": ("paper_run_id",),
+        "ix_execution_order_intents_paper_order_id": ("paper_order_id",),
+        "ix_execution_order_intents_client_order_id": ("client_order_id",),
+        "ix_execution_order_intents_symbol": ("symbol",),
+        "ix_execution_order_intents_instrument_id": ("instrument_id",),
+        "ix_execution_order_intents_broker_mode": ("broker_mode",),
+        "ix_execution_order_intents_status": ("status",),
+        "ix_execution_order_intents_risk_profile_name": ("risk_profile_name",),
+        "ix_execution_order_intents_approval_required": ("approval_required",),
+        "ix_execution_order_intents_approval_request_id": ("approval_request_id",),
+        "ix_execution_order_intents_blocked_reason_code": ("blocked_reason_code",),
+        "ix_execution_order_intents_created_at": ("created_at",),
+        "ix_execution_order_intents_updated_at": ("updated_at",),
+        "ix_execution_order_intents_submitted_at": ("submitted_at",),
+    }.items():
+        assert intent_indexes[name] == columns
+    assert _unique_columns(inspector, "execution_order_intents")[
+        "uq_execution_order_intents_client_order_id"
+    ] == ("client_order_id",)
+
+    decision_columns = _columns(inspector, "execution_order_decisions")
+    assert {
+        "id",
+        "order_intent_id",
+        "decision_type",
+        "reason_code",
+        "message",
+        "policy_payload",
+        "created_at",
+    } <= set(decision_columns)
+    decision_indexes = _index_columns(inspector, "execution_order_decisions")
+    assert decision_indexes["ix_execution_order_decisions_order_intent_id"] == (
+        "order_intent_id",
+    )
+    assert decision_indexes["ix_execution_order_decisions_decision_type"] == (
+        "decision_type",
+    )
+    assert decision_indexes["ix_execution_order_decisions_reason_code"] == (
+        "reason_code",
+    )
+    assert decision_indexes["ix_execution_order_decisions_created_at"] == ("created_at",)
+
+    approval_columns = _columns(inspector, "operator_approval_requests")
+    assert {
+        "id",
+        "resource_type",
+        "resource_id",
+        "status",
+        "reason_code",
+        "requested_by",
+        "requested_at",
+        "decided_by",
+        "decided_at",
+        "operator_note",
+        "expires_at",
+    } <= set(approval_columns)
+    approval_indexes = _index_columns(inspector, "operator_approval_requests")
+    assert approval_indexes["ix_operator_approval_requests_resource"] == (
+        "resource_type",
+        "resource_id",
+    )
+    for name, columns in {
+        "ix_operator_approval_requests_resource_type": ("resource_type",),
+        "ix_operator_approval_requests_resource_id": ("resource_id",),
+        "ix_operator_approval_requests_status": ("status",),
+        "ix_operator_approval_requests_reason_code": ("reason_code",),
+        "ix_operator_approval_requests_requested_at": ("requested_at",),
+        "ix_operator_approval_requests_decided_at": ("decided_at",),
+        "ix_operator_approval_requests_expires_at": ("expires_at",),
+    }.items():
+        assert approval_indexes[name] == columns
+
+    incident_columns = _columns(inspector, "safety_incidents")
+    assert {
+        "id",
+        "severity",
+        "category",
+        "status",
+        "resource_type",
+        "resource_id",
+        "reason_code",
+        "message",
+        "payload",
+        "created_at",
+        "acknowledged_by",
+        "acknowledged_at",
+        "resolved_by",
+        "resolved_at",
+    } <= set(incident_columns)
+    incident_indexes = _index_columns(inspector, "safety_incidents")
+    for name, columns in {
+        "ix_safety_incidents_severity": ("severity",),
+        "ix_safety_incidents_category": ("category",),
+        "ix_safety_incidents_status": ("status",),
+        "ix_safety_incidents_resource_type": ("resource_type",),
+        "ix_safety_incidents_resource_id": ("resource_id",),
+        "ix_safety_incidents_reason_code": ("reason_code",),
+        "ix_safety_incidents_created_at": ("created_at",),
+    }.items():
+        assert incident_indexes[name] == columns
+
+    event_columns = _columns(inspector, "kill_switch_events")
+    assert {
+        "id",
+        "scope",
+        "previous_state_payload",
+        "new_state_payload",
+        "operator",
+        "reason",
+        "created_at",
+    } <= set(event_columns)
+    event_indexes = _index_columns(inspector, "kill_switch_events")
+    assert event_indexes["ix_kill_switch_events_scope"] == ("scope",)
+    assert event_indexes["ix_kill_switch_events_created_at"] == ("created_at",)
+
+
 def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch):
     db_path = tmp_path / "runtime.sqlite3"
     database_url = f"sqlite+pysqlite:///{db_path}"
@@ -259,6 +451,18 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
     } <= agent_run_columns
 
     _assert_validation_report_schema(inspector)
+    _assert_pre_live_safety_ops_schema(inspector)
+
+    engine = create_engine(database_url, future=True)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "select scope, kill_switch_active, dry_run_enabled, "
+                "simulated_enabled, live_enabled "
+                "from execution_safety_states where scope = 'global'"
+            )
+        ).one()
+    assert tuple(row) == ("global", False, True, True, False)
 
 
 def test_validation_report_migration_downgrade_and_reupgrade(

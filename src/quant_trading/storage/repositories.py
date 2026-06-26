@@ -14,12 +14,18 @@ from quant_trading.storage.models import (
     BrokerOrderEventORM,
     DataQualityReportORM,
     DataSyncRunORM,
+    ExecutionOrderDecisionORM,
+    ExecutionOrderIntentORM,
+    ExecutionSafetyStateORM,
     InstrumentORM,
     JobEventORM,
     JobRunORM,
     JobScheduleORM,
+    KillSwitchEventORM,
     MarketBarORM,
+    OperatorApprovalRequestORM,
     ResearchValidationReportORM,
+    SafetyIncidentORM,
     WorkflowRunORM,
 )
 
@@ -36,6 +42,10 @@ def _json_default(value):
 
 def _json_dumps(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=_json_default)
+
+
+def _cap_text(value: str, limit: int) -> str:
+    return value[:limit]
 
 
 def _broker_request_payload(request: BrokerOrderRequest) -> dict:
@@ -1272,4 +1282,446 @@ class ResearchValidationReportRepository:
             select(ResearchValidationReportORM).where(
                 ResearchValidationReportORM.candidate_review_id == candidate_review_id
             )
+        )
+
+
+def _normalize_decimal(value) -> Decimal | None:
+    if value is None:
+        return None
+    return Decimal(str(value)).quantize(Decimal("0.000001"))
+
+
+class ExecutionSafetyStateRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_global(self) -> ExecutionSafetyStateORM | None:
+        return self.session.scalar(
+            select(ExecutionSafetyStateORM).where(ExecutionSafetyStateORM.scope == "global")
+        )
+
+    def get_or_create_global(self, now: datetime) -> ExecutionSafetyStateORM:
+        row = self.get_global()
+        if row is not None:
+            return row
+
+        row = ExecutionSafetyStateORM(
+            scope="global",
+            kill_switch_active=False,
+            dry_run_enabled=True,
+            simulated_enabled=True,
+            live_enabled=False,
+            reason="default simulated and dry-run startup",
+            updated_by="system",
+            updated_at=now,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def set_kill_switch(
+        self,
+        active: bool,
+        operator: str,
+        reason: str,
+        now: datetime,
+    ) -> ExecutionSafetyStateORM:
+        row = self.get_or_create_global(now)
+        row.kill_switch_active = active
+        row.reason = _cap_text(reason, 1024)
+        row.updated_by = _cap_text(operator, 128)
+        row.updated_at = now
+        self.session.flush()
+        return row
+
+    def payload(self, row: ExecutionSafetyStateORM) -> dict:
+        return {
+            "scope": row.scope,
+            "kill_switch_active": row.kill_switch_active,
+            "dry_run_enabled": row.dry_run_enabled,
+            "simulated_enabled": row.simulated_enabled,
+            "live_enabled": row.live_enabled,
+            "reason": row.reason,
+            "updated_by": row.updated_by,
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+
+class ExecutionOrderIntentRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get(self, order_intent_id: int) -> ExecutionOrderIntentORM | None:
+        return self.session.get(ExecutionOrderIntentORM, order_intent_id)
+
+    def get_by_client_order_id(
+        self,
+        client_order_id: str,
+    ) -> ExecutionOrderIntentORM | None:
+        return self.session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.client_order_id == client_order_id
+            )
+        )
+
+    def get_or_create(
+        self,
+        *,
+        source_type: str,
+        source_id: int | None,
+        paper_run_id: int | None,
+        paper_order_id: int | None,
+        client_order_id: str,
+        symbol: str,
+        instrument_id: int,
+        side: str,
+        order_type: str,
+        quantity: int,
+        limit_price: Decimal | None,
+        estimated_price: Decimal | None,
+        estimated_notional: Decimal,
+        broker_mode: str,
+        risk_profile_name: str,
+        risk_summary_payload: dict,
+        approval_required: bool,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> tuple[ExecutionOrderIntentORM, bool]:
+        payload_json = _json_dumps(risk_summary_payload)
+        existing = self.get_by_client_order_id(client_order_id)
+        if existing is not None:
+            expected = {
+                "source_type": source_type,
+                "source_id": source_id,
+                "paper_run_id": paper_run_id,
+                "paper_order_id": paper_order_id,
+                "client_order_id": client_order_id,
+                "symbol": symbol,
+                "instrument_id": instrument_id,
+                "side": side,
+                "order_type": order_type,
+                "quantity": quantity,
+                "limit_price": _normalize_decimal(limit_price),
+                "estimated_price": _normalize_decimal(estimated_price),
+                "estimated_notional": _normalize_decimal(estimated_notional),
+                "broker_mode": broker_mode,
+                "risk_profile_name": risk_profile_name,
+                "risk_summary_payload": json.loads(payload_json),
+                "approval_required": approval_required,
+            }
+            actual = {
+                "source_type": existing.source_type,
+                "source_id": existing.source_id,
+                "paper_run_id": existing.paper_run_id,
+                "paper_order_id": existing.paper_order_id,
+                "client_order_id": existing.client_order_id,
+                "symbol": existing.symbol,
+                "instrument_id": existing.instrument_id,
+                "side": existing.side,
+                "order_type": existing.order_type,
+                "quantity": existing.quantity,
+                "limit_price": _normalize_decimal(existing.limit_price),
+                "estimated_price": _normalize_decimal(existing.estimated_price),
+                "estimated_notional": _normalize_decimal(existing.estimated_notional),
+                "broker_mode": existing.broker_mode,
+                "risk_profile_name": existing.risk_profile_name,
+                "risk_summary_payload": json.loads(existing.risk_summary_payload),
+                "approval_required": existing.approval_required,
+            }
+            if actual != expected:
+                raise ValueError(
+                    "client_order_id already exists with different payload"
+                )
+            return existing, False
+
+        row = ExecutionOrderIntentORM(
+            source_type=source_type,
+            source_id=source_id,
+            paper_run_id=paper_run_id,
+            paper_order_id=paper_order_id,
+            client_order_id=client_order_id,
+            symbol=symbol,
+            instrument_id=instrument_id,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            limit_price=limit_price,
+            estimated_price=estimated_price,
+            estimated_notional=estimated_notional,
+            broker_mode=broker_mode,
+            status="created",
+            risk_profile_name=risk_profile_name,
+            risk_summary_payload=payload_json,
+            approval_required=approval_required,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row, True
+
+    def set_status(
+        self,
+        row: ExecutionOrderIntentORM,
+        status: str,
+        updated_at: datetime,
+        *,
+        approval_required: bool | None = None,
+        approval_request_id: int | None = None,
+        blocked_reason_code: str | None = None,
+        blocked_reason: str | None = None,
+        submitted_at: datetime | None = None,
+    ) -> ExecutionOrderIntentORM:
+        row.status = status
+        row.updated_at = updated_at
+        if approval_required is not None:
+            row.approval_required = approval_required
+        if approval_request_id is not None:
+            row.approval_request_id = approval_request_id
+        if blocked_reason_code is not None:
+            row.blocked_reason_code = blocked_reason_code
+        if blocked_reason is not None:
+            row.blocked_reason = blocked_reason
+        if submitted_at is not None:
+            row.submitted_at = submitted_at
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        status: str | None = None,
+        broker_mode: str | None = None,
+        limit: int = 50,
+    ) -> list[ExecutionOrderIntentORM]:
+        statement = select(ExecutionOrderIntentORM).order_by(
+            ExecutionOrderIntentORM.id.desc()
+        ).limit(limit)
+        if status:
+            statement = statement.where(ExecutionOrderIntentORM.status == status)
+        if broker_mode:
+            statement = statement.where(ExecutionOrderIntentORM.broker_mode == broker_mode)
+        return list(self.session.scalars(statement).all())
+
+
+class ExecutionOrderDecisionRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(
+        self,
+        order_intent_id: int,
+        decision_type: str,
+        reason_code: str,
+        message: str,
+        policy_payload: dict,
+        created_at: datetime,
+    ) -> ExecutionOrderDecisionORM:
+        row = ExecutionOrderDecisionORM(
+            order_intent_id=order_intent_id,
+            decision_type=decision_type,
+            reason_code=reason_code,
+            message=_cap_text(message, 1024),
+            policy_payload=_json_dumps(policy_payload),
+            created_at=created_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_recent(self, *, limit: int = 50) -> list[ExecutionOrderDecisionORM]:
+        return list(
+            self.session.scalars(
+                select(ExecutionOrderDecisionORM)
+                .order_by(ExecutionOrderDecisionORM.id.desc())
+                .limit(limit)
+            ).all()
+        )
+
+
+class OperatorApprovalRequestRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get(self, approval_request_id: int) -> OperatorApprovalRequestORM | None:
+        return self.session.get(OperatorApprovalRequestORM, approval_request_id)
+
+    def get_active_for_resource(
+        self,
+        resource_type: str,
+        resource_id: int,
+    ) -> OperatorApprovalRequestORM | None:
+        return self.session.scalar(
+            select(OperatorApprovalRequestORM).where(
+                OperatorApprovalRequestORM.resource_type == resource_type,
+                OperatorApprovalRequestORM.resource_id == resource_id,
+                OperatorApprovalRequestORM.status == "pending",
+            )
+        )
+
+    def create_pending(
+        self,
+        resource_type: str,
+        resource_id: int,
+        reason_code: str,
+        requested_by: str,
+        requested_at: datetime,
+        expires_at: datetime | None,
+    ) -> OperatorApprovalRequestORM:
+        existing = self.get_active_for_resource(resource_type, resource_id)
+        if existing is not None:
+            return existing
+
+        row = OperatorApprovalRequestORM(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            status="pending",
+            reason_code=reason_code,
+            requested_by=_cap_text(requested_by, 128),
+            requested_at=requested_at,
+            expires_at=expires_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def decide(
+        self,
+        row: OperatorApprovalRequestORM,
+        status: str,
+        operator: str,
+        note: str,
+        decided_at: datetime,
+    ) -> OperatorApprovalRequestORM:
+        if row.status != "pending":
+            raise ValueError("approval request is not pending")
+        row.status = status
+        row.decided_by = _cap_text(operator, 128)
+        row.operator_note = _cap_text(note, 2048)
+        row.decided_at = decided_at
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[OperatorApprovalRequestORM]:
+        statement = select(OperatorApprovalRequestORM).order_by(
+            OperatorApprovalRequestORM.id.desc()
+        ).limit(limit)
+        if status:
+            statement = statement.where(OperatorApprovalRequestORM.status == status)
+        return list(self.session.scalars(statement).all())
+
+
+class SafetyIncidentRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get(self, incident_id: int) -> SafetyIncidentORM | None:
+        return self.session.get(SafetyIncidentORM, incident_id)
+
+    def create(
+        self,
+        severity: str,
+        category: str,
+        resource_type: str | None,
+        resource_id: int | None,
+        reason_code: str,
+        message: str,
+        payload: dict,
+        created_at: datetime,
+    ) -> SafetyIncidentORM:
+        row = SafetyIncidentORM(
+            severity=severity,
+            category=category,
+            status="open",
+            resource_type=resource_type,
+            resource_id=resource_id,
+            reason_code=reason_code,
+            message=_cap_text(message, 2048),
+            payload=_json_dumps(payload),
+            created_at=created_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def acknowledge(
+        self,
+        row: SafetyIncidentORM,
+        operator: str,
+        acknowledged_at: datetime,
+    ) -> SafetyIncidentORM:
+        if row.status == "resolved":
+            raise ValueError("incident is already resolved")
+        row.status = "acknowledged"
+        row.acknowledged_by = _cap_text(operator, 128)
+        row.acknowledged_at = acknowledged_at
+        self.session.flush()
+        return row
+
+    def resolve(
+        self,
+        row: SafetyIncidentORM,
+        operator: str,
+        resolved_at: datetime,
+    ) -> SafetyIncidentORM:
+        row.status = "resolved"
+        row.resolved_by = _cap_text(operator, 128)
+        row.resolved_at = resolved_at
+        self.session.flush()
+        return row
+
+    def list_recent(
+        self,
+        *,
+        status: str | None = None,
+        severity: str | None = None,
+        limit: int = 50,
+    ) -> list[SafetyIncidentORM]:
+        statement = select(SafetyIncidentORM).order_by(
+            SafetyIncidentORM.id.desc()
+        ).limit(limit)
+        if status:
+            statement = statement.where(SafetyIncidentORM.status == status)
+        if severity:
+            statement = statement.where(SafetyIncidentORM.severity == severity)
+        return list(self.session.scalars(statement).all())
+
+
+class KillSwitchEventRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(
+        self,
+        scope: str,
+        previous_state_payload: dict,
+        new_state_payload: dict,
+        operator: str,
+        reason: str,
+        created_at: datetime,
+    ) -> KillSwitchEventORM:
+        row = KillSwitchEventORM(
+            scope=scope,
+            previous_state_payload=_json_dumps(previous_state_payload),
+            new_state_payload=_json_dumps(new_state_payload),
+            operator=_cap_text(operator, 128),
+            reason=_cap_text(reason, 1024),
+            created_at=created_at,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_recent(self, *, limit: int = 50) -> list[KillSwitchEventORM]:
+        return list(
+            self.session.scalars(
+                select(KillSwitchEventORM)
+                .order_by(KillSwitchEventORM.id.desc())
+                .limit(limit)
+            ).all()
         )

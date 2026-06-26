@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -543,3 +544,147 @@ class ResearchValidationReportORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ExecutionSafetyStateORM(Base):
+    __tablename__ = "execution_safety_states"
+    __table_args__ = (
+        UniqueConstraint("scope", name="uq_execution_safety_states_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(64), index=True)
+    kill_switch_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    dry_run_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    simulated_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    live_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[str] = mapped_column(String(128), default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class OperatorApprovalRequestORM(Base):
+    __tablename__ = "operator_approval_requests"
+    __table_args__ = (
+        Index(
+            "ix_operator_approval_requests_resource",
+            "resource_type",
+            "resource_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    resource_type: Mapped[str] = mapped_column(String(64), index=True)
+    resource_id: Mapped[int] = mapped_column(Integer, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    reason_code: Mapped[str] = mapped_column(String(128), index=True)
+    requested_by: Mapped[str] = mapped_column(String(128), default="system")
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    operator_note: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class ExecutionOrderIntentORM(Base):
+    __tablename__ = "execution_order_intents"
+    __table_args__ = (
+        UniqueConstraint(
+            "client_order_id",
+            name="uq_execution_order_intents_client_order_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_type: Mapped[str] = mapped_column(String(64), index=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    paper_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    paper_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_orders.id"),
+        nullable=True,
+        index=True,
+    )
+    client_order_id: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    instrument_id: Mapped[int] = mapped_column(Integer, index=True)
+    side: Mapped[str] = mapped_column(String(16))
+    order_type: Mapped[str] = mapped_column(String(16))
+    quantity: Mapped[int] = mapped_column(Integer)
+    limit_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 6),
+        nullable=True,
+    )
+    estimated_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 6),
+        nullable=True,
+    )
+    estimated_notional: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=0)
+    broker_mode: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="created", index=True)
+    risk_profile_name: Mapped[str] = mapped_column(String(128), index=True)
+    risk_summary_payload: Mapped[str] = mapped_column(Text, default="{}")
+    approval_required: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    approval_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operator_approval_requests.id"),
+        nullable=True,
+        index=True,
+    )
+    blocked_reason_code: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        index=True,
+    )
+    blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class ExecutionOrderDecisionORM(Base):
+    __tablename__ = "execution_order_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_intent_id: Mapped[int] = mapped_column(
+        ForeignKey("execution_order_intents.id"),
+        index=True,
+    )
+    decision_type: Mapped[str] = mapped_column(String(32), index=True)
+    reason_code: Mapped[str] = mapped_column(String(128), index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    policy_payload: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SafetyIncidentORM(Base):
+    __tablename__ = "safety_incidents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    severity: Mapped[str] = mapped_column(String(32), index=True)
+    category: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    resource_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    reason_code: Mapped[str] = mapped_column(String(128), index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class KillSwitchEventORM(Base):
+    __tablename__ = "kill_switch_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(64), index=True)
+    previous_state_payload: Mapped[str] = mapped_column(Text, default="{}")
+    new_state_payload: Mapped[str] = mapped_column(Text, default="{}")
+    operator: Mapped[str] = mapped_column(String(128), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

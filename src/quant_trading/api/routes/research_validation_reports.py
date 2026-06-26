@@ -76,7 +76,10 @@ def _research_validation_report_payload(row: ResearchValidationReportORM) -> dic
 def _json_loads(value: str | None) -> dict[str, Any]:
     if not value:
         return {}
-    loaded = json.loads(value)
+    try:
+        loaded = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
     return loaded if isinstance(loaded, dict) else {"value": loaded}
 
 

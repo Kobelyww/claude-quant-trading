@@ -13,6 +13,7 @@ from quant_trading.storage.models import (
     AgentCandidateReviewORM,
     BacktestRunORM,
     BrokerOrderEventORM,
+    DataQualityReportORM,
     PaperRunORM,
     ResearchValidationReportORM,
 )
@@ -37,10 +38,16 @@ def _create_engine():
     return engine
 
 
-def make_client(engine=None):
+def make_client(engine=None, *, raise_server_exceptions: bool = True):
     engine = engine or _create_engine()
     settings = AppSettings(job_executor="inline")
-    return TestClient(create_app(engine=engine, settings=settings)), engine
+    return (
+        TestClient(
+            create_app(engine=engine, settings=settings),
+            raise_server_exceptions=raise_server_exceptions,
+        ),
+        engine,
+    )
 
 
 def _seed_weekday_bars(session, *, count: int = 300, invalid: bool = False) -> None:
@@ -542,6 +549,59 @@ def test_report_read_apis_return_decoded_payloads():
     assert missing_validation_response.json() == {
         "detail": "research validation report not found"
     }
+
+
+def test_data_quality_report_read_api_tolerates_malformed_payload():
+    engine = _create_engine()
+    with session_scope(engine) as session:
+        row = DataQualityReportORM(
+            symbol=SYMBOL,
+            findings_payload="{malformed-json",
+            status="passed",
+            severity="none",
+        )
+        session.add(row)
+        session.flush()
+        report_id = row.id
+    client, _ = make_client(engine, raise_server_exceptions=False)
+
+    response = client.get(f"/data-quality-reports/{report_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == report_id
+    assert isinstance(payload["findings_payload"], dict)
+
+
+def test_research_validation_report_read_api_tolerates_malformed_payload():
+    engine = _create_engine()
+    candidate_review_id, backtest_run_id = _seed_passing_validation_candidate(engine)
+    with session_scope(engine) as session:
+        row = ResearchValidationReportORM(
+            candidate_review_id=candidate_review_id,
+            source_backtest_run_id=backtest_run_id,
+            symbol=SYMBOL,
+            strategy_name="ma_cross",
+            validation_status="passed",
+            readiness_floor="ready_for_paper_research",
+            in_sample_metrics_payload="{malformed-json",
+            out_of_sample_metrics_payload="{}",
+            walk_forward_payload="{}",
+            parameter_sensitivity_payload="{}",
+            benchmark_payload="{}",
+            summary_payload="{}",
+        )
+        session.add(row)
+        session.flush()
+        report_id = row.id
+    client, _ = make_client(engine, raise_server_exceptions=False)
+
+    response = client.get(f"/research-validation-reports/{report_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == report_id
+    assert isinstance(payload["in_sample_metrics_payload"], dict)
 
 
 def test_report_read_apis_filter_recent_reports():

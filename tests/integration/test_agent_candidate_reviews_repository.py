@@ -13,6 +13,7 @@ from quant_trading.storage.models import (
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
     AgentRunRepository,
+    DataQualityReportRepository,
 )
 
 
@@ -248,3 +249,50 @@ def test_candidate_review_source_agent_run_is_unique():
         rows = session.scalars(select(AgentCandidateReviewORM)).all()
         assert len(rows) == 1
         assert session.get(AgentRunORM, 1) is not None
+
+
+def test_candidate_review_repository_links_data_quality_report():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    created_at = datetime(2026, 6, 24, 9, 0, 0)
+    linked_at = datetime(2026, 6, 24, 9, 1, 0)
+
+    with session_scope(engine) as session:
+        source = _create_source_agent_run(session)
+        review_repo = AgentCandidateReviewRepository(session)
+        review = review_repo.create_decision(
+            source_agent_run_id=source.id,
+            status="approved",
+            symbol="000001",
+            strategy_name="ma_cross",
+            candidate_payload="{}",
+            backtest_request_payload="{}",
+            operator="local",
+            operator_note="approved",
+            decided_at=created_at,
+            created_at=created_at,
+        )
+        report = DataQualityReportRepository(session).create_running(
+            candidate_review_id=review.id,
+            backtest_run_id=None,
+            job_run_id=None,
+            symbol="000001",
+            source="akshare",
+            adjusted="qfq",
+            start_date=None,
+            end_date=None,
+            created_at=created_at,
+        )
+        review_repo.link_data_quality_report(
+            review,
+            data_quality_report_id=report.id,
+            updated_at=linked_at,
+        )
+        review_id = review.id
+        report_id = report.id
+
+    with session_scope(engine) as session:
+        review = AgentCandidateReviewRepository(session).get(review_id)
+        assert review is not None
+        assert review.data_quality_report_id == report_id
+        assert review.updated_at == linked_at

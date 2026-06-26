@@ -191,3 +191,33 @@ def test_research_validation_report_repository_reuses_candidate_row():
         )
         candidate = session.get(AgentCandidateReviewORM, candidate_review_id)
         assert candidate.research_validation_report_id == updated.id
+
+
+def test_research_validation_report_repository_marks_failed_with_capped_error():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    started = datetime(2026, 6, 26, 9, 0, 0)
+    finished = datetime(2026, 6, 26, 9, 0, 1)
+
+    with session_scope(engine) as session:
+        candidate_review_id, source_backtest_run_id = _seed_candidate_review(session)
+        repo = ResearchValidationReportRepository(session)
+        row = repo.create_or_reset_running(
+            candidate_review_id=candidate_review_id,
+            source_backtest_run_id=source_backtest_run_id,
+            data_quality_report_id=None,
+            job_run_id=None,
+            symbol="000001",
+            strategy_name="ma_cross",
+            started_at=started,
+        )
+        repo.mark_failed(row, "x" * 1200, finished_at=finished, duration_ms=1000)
+        row_id = row.id
+
+    with session_scope(engine) as session:
+        row = ResearchValidationReportRepository(session).get(row_id)
+        assert row is not None
+        assert row.validation_status == "failed"
+        assert row.readiness_floor == "not_ready"
+        assert row.duration_ms == 1000
+        assert len(row.error_message) == 1000

@@ -3,7 +3,13 @@ from decimal import Decimal
 
 from quant_trading.core.enums import Adjustment, Market
 from quant_trading.core.models import Bar
-from quant_trading.data.quality import assess_bars_quality
+from quant_trading.data.quality import assess_bars_quality, build_data_quality_report
+from quant_trading.storage.db import create_all, make_engine, session_scope
+from quant_trading.storage.models import MarketBarORM
+from quant_trading.storage.repositories import (
+    DataQualityReportRepository,
+    InstrumentRepository,
+)
 
 
 def make_bar(
@@ -155,3 +161,57 @@ def test_data_fingerprint_is_stable_and_changes_when_values_change():
 
     assert first["data_fingerprint"] == second["data_fingerprint"]
     assert first["data_fingerprint"] != third["data_fingerprint"]
+
+
+def test_build_data_quality_report_counts_raw_invalid_rows_without_raising():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    start = date(2026, 1, 1)
+
+    with session_scope(engine) as session:
+        instrument = InstrumentRepository(session).upsert_symbol(
+            symbol="000001",
+            name="Ping An Bank",
+            market=Market.A_STOCK,
+            asset_type="stock",
+            currency="CNY",
+            exchange="SZSE",
+        )
+        for offset in range(120):
+            day = start + timedelta(days=offset)
+            high = Decimal("11")
+            volume = Decimal("1000")
+            if offset == 0:
+                high = Decimal("9")
+            if offset == 1:
+                volume = Decimal("-1")
+            session.add(
+                MarketBarORM(
+                    instrument_id=instrument.id,
+                    timestamp=day,
+                    timeframe="1d",
+                    open=Decimal("10"),
+                    high=high,
+                    low=Decimal("9"),
+                    close=Decimal("10"),
+                    volume=volume,
+                    adjusted="qfq",
+                    source="akshare",
+                )
+            )
+
+    result = build_data_quality_report(
+        engine,
+        symbol="000001",
+        start=start,
+        end=start + timedelta(days=119),
+    )
+
+    with session_scope(engine) as session:
+        report = DataQualityReportRepository(session).get(result["report_id"])
+        assert report is not None
+        assert report.status == "failed"
+        assert report.severity == "high"
+        assert report.invalid_ohlc_count == 1
+        assert report.non_positive_volume_count == 1
+        assert report.bar_count == 120

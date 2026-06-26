@@ -8,13 +8,15 @@ import json
 from typing import Any
 
 from sqlalchemy import Engine
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from quant_trading.core.models import Bar
 from quant_trading.storage.db import session_scope
+from quant_trading.storage.models import InstrumentORM, MarketBarORM
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
     DataQualityReportRepository,
-    MarketDataRepository,
 )
 
 STATUS_PASSED = "passed"
@@ -212,7 +214,7 @@ def build_data_quality_report(
             report = reports.get(report_id)
             if report is None:
                 raise ValueError(f"data quality report {report_id} was not found")
-            bars = MarketDataRepository(session).list_bars(symbol, start=start, end=end)
+            bars = _list_raw_market_bars(session, symbol, start=start, end=end)
             assessment = assess_bars_quality(
                 bars,
                 requested_start=start,
@@ -283,11 +285,37 @@ def _weekday_count(start: date, end: date) -> int:
     return count
 
 
+def _list_raw_market_bars(
+    session: Session,
+    symbol: str,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    source: str | None = None,
+    adjusted: str | None = None,
+) -> list[MarketBarORM]:
+    statement = (
+        select(MarketBarORM)
+        .join(InstrumentORM)
+        .where(InstrumentORM.symbol == symbol)
+        .order_by(MarketBarORM.timestamp)
+    )
+    if start is not None:
+        statement = statement.where(MarketBarORM.timestamp >= start)
+    if end is not None:
+        statement = statement.where(MarketBarORM.timestamp <= end)
+    if source:
+        statement = statement.where(MarketBarORM.source == source)
+    if adjusted:
+        statement = statement.where(MarketBarORM.adjusted == adjusted)
+    return list(session.scalars(statement).all())
+
+
 def _fingerprint(bars: list[Bar]) -> str:
     lines = [
         "|".join(
             [
-                bar.symbol,
+                _bar_symbol(bar),
                 _bar_date(bar.timestamp).isoformat(),
                 _decimal_text(bar.open),
                 _decimal_text(bar.high),
@@ -327,6 +355,16 @@ def _bar_date(value: date | datetime | str) -> date:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value))
+
+
+def _bar_symbol(bar: Any) -> str:
+    symbol = getattr(bar, "symbol", None)
+    if symbol is not None:
+        return str(symbol)
+    instrument = getattr(bar, "instrument", None)
+    if instrument is not None:
+        return str(instrument.symbol)
+    return ""
 
 
 def _decimal_text(value: Decimal) -> str:

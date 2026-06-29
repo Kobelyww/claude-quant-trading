@@ -12,6 +12,7 @@ from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.models import ExecutionOrderDecisionORM, ExecutionOrderIntentORM
 from quant_trading.storage.repositories import (
     ExecutionOrderDecisionRepository,
+    ExecutionOrderIntentRepository,
     ExecutionSafetyStateRepository,
     OperatorApprovalRequestRepository,
 )
@@ -277,6 +278,81 @@ def test_evaluate_order_intent_creates_pending_request_and_approve_only_updates_
         assert intent.approval_required is False
         assert decisions[0].decision_type == "approved"
         assert decisions[0].reason_code == "approved"
+
+
+def test_approve_order_intent_rejects_persisted_invalid_source_type_without_state_change():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 30, 0)
+
+    with session_scope(engine) as session:
+        intent, _ = ExecutionOrderIntentRepository(session).get_or_create(
+            source_type="generated_strategy",
+            source_id=99,
+            paper_run_id=None,
+            paper_order_id=None,
+            client_order_id="order-invalid-source-approval",
+            symbol="000001",
+            instrument_id=1,
+            side="buy",
+            order_type="market",
+            quantity=6000,
+            limit_price=None,
+            estimated_price=Decimal("10"),
+            estimated_notional=Decimal("60000"),
+            broker_mode="simulated",
+            risk_profile_name="pre_live_default",
+            risk_summary_payload={"checks": []},
+            approval_required=True,
+            created_at=now,
+            updated_at=now,
+        )
+        approval = OperatorApprovalRequestRepository(session).create_pending(
+            resource_type="execution_order_intent",
+            resource_id=intent.id,
+            reason_code="manual_approval_required_notional",
+            requested_by="system",
+            requested_at=now,
+            expires_at=None,
+        )
+        ExecutionOrderIntentRepository(session).set_status(
+            intent,
+            "approval_required",
+            now,
+            approval_required=True,
+            approval_request_id=approval.id,
+        )
+        intent.approval_request_id = approval.id
+
+    with session_scope(engine) as session:
+        intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.client_order_id
+                == "order-invalid-source-approval"
+            )
+        )
+        approval = OperatorApprovalRequestRepository(session).list_recent(
+            status="pending"
+        )[0]
+
+        with pytest.raises(ValueError, match="source_type"):
+            PreLiveSafetyService(session).approve_order_intent(
+                intent.id,
+                operator="risk lead",
+                note="approved for pre-live dry run",
+                now=now,
+            )
+
+        session.refresh(intent)
+        session.refresh(approval)
+        decisions = ExecutionOrderDecisionRepository(session).list_recent()
+
+        assert intent.status == "approval_required"
+        assert intent.approval_required is True
+        assert intent.source_type == "generated_strategy"
+        assert approval.status == "pending"
+        assert approval.decided_by is None
+        assert approval.decided_at is None
+        assert all(decision.decision_type != "approved" for decision in decisions)
 
 
 def test_duplicate_already_evaluated_client_order_id_skips_new_decision_record():

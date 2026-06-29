@@ -286,6 +286,7 @@ class PreLiveSafetyService:
         approval_repo = OperatorApprovalRequestRepository(session)
         intent = self._get_order_intent(order_intent_id)
         approval = self._get_intent_approval(approval_repo, intent)
+        self._validate_order_intent_source_type(intent)
         ExecutionOrderStateMachine.validate(intent.status, "operator_approved")
         approval_repo.decide(
             approval,
@@ -794,6 +795,16 @@ class PreLiveSafetyService:
         ):
             raise ValueError("approval request does not match execution order intent")
         return approval
+
+    def _validate_order_intent_source_type(
+        self,
+        intent: ExecutionOrderIntentORM,
+    ) -> None:
+        if intent.source_type not in _VALID_SOURCE_TYPES:
+            raise ValueError(
+                "invalid execution order intent source_type for approval: "
+                f"{intent.source_type}"
+            )
 
     def _require_session(self) -> Session:
         if self.session is None:

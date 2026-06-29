@@ -145,6 +145,25 @@ def test_invalid_broker_mode_raises_domain_validation_error():
         service.evaluate_policy(_policy_input(broker_mode="bad-mode"))
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"quantity": 0},
+        {"quantity": -100},
+        {"side": "hold"},
+        {"order_type": "stop_loss"},
+    ],
+)
+def test_malformed_order_intent_is_blocked_before_submission(overrides):
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(_policy_input(**overrides))
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_invalid_order_intent"
+    assert decision.broker_submission_allowed is False
+
+
 def test_simulated_order_within_limits_is_approved():
     service = PreLiveSafetyService()
 

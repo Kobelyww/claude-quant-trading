@@ -298,6 +298,68 @@ def test_reject_order_intent_blocks_order_without_submission():
         assert decisions[0].reason_code == "blocked_operator_rejected"
 
 
+@pytest.mark.parametrize(
+    ("action", "operator", "note"),
+    [
+        ("approve", "", "approved for pre-live dry run"),
+        ("approve", "   ", "approved for pre-live dry run"),
+        ("approve", "risk lead", ""),
+        ("approve", "risk lead", "   "),
+        ("reject", "", "not for this session"),
+        ("reject", "   ", "not for this session"),
+        ("reject", "risk lead", ""),
+        ("reject", "risk lead", "   "),
+    ],
+)
+def test_approve_reject_require_operator_and_note_without_state_change(
+    action, operator, note
+):
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 30, 0)
+
+    with session_scope(engine) as session:
+        PreLiveSafetyService(session).evaluate_order_intent(
+            _policy_input(
+                client_order_id=f"order-{action}-audit-validation",
+                quantity=6000,
+                estimated_price=Decimal("10"),
+            ),
+            now=now,
+        )
+
+    with session_scope(engine) as session:
+        intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.client_order_id
+                == f"order-{action}-audit-validation"
+            )
+        )
+        approval = OperatorApprovalRequestRepository(session).list_recent(
+            status="pending"
+        )[0]
+        service = PreLiveSafetyService(session)
+        method = (
+            service.approve_order_intent
+            if action == "approve"
+            else service.reject_order_intent
+        )
+
+        with pytest.raises(ValueError, match="operator and note are required"):
+            method(intent.id, operator=operator, note=note, now=now)
+
+        session.refresh(intent)
+        session.refresh(approval)
+        decisions = ExecutionOrderDecisionRepository(session).list_recent()
+
+        assert intent.status == "approval_required"
+        assert intent.approval_required is True
+        assert approval.status == "pending"
+        assert approval.decided_by is None
+        assert approval.decided_at is None
+        assert approval.operator_note == ""
+        assert len(decisions) == 1
+
+
 def test_approve_reject_invalid_approval_state_raises_without_new_decision():
     engine = make_engine_with_schema()
     now = datetime(2026, 6, 26, 9, 30, 0)

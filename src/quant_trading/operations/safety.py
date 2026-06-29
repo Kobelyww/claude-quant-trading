@@ -40,6 +40,8 @@ def _date_only(value: date | datetime | str) -> date:
 
 
 _VALID_BROKER_MODES = frozenset({"simulated", "dry_run", "live"})
+_VALID_ORDER_SIDES = frozenset(item.value for item in OrderSide)
+_VALID_ORDER_TYPES = frozenset(item.value for item in OrderType)
 
 
 @dataclass(frozen=True)
@@ -253,6 +255,7 @@ class PreLiveSafetyService:
     ) -> PreLiveSafetyDecision:
         session = self._require_session()
         now = now or datetime.utcnow()
+        operator, note = self._validate_operator_decision(operator, note)
         approval_repo = OperatorApprovalRequestRepository(session)
         intent = self._get_order_intent(order_intent_id)
         approval = self._get_intent_approval(approval_repo, intent)
@@ -297,6 +300,7 @@ class PreLiveSafetyService:
     ) -> PreLiveSafetyDecision:
         session = self._require_session()
         now = now or datetime.utcnow()
+        operator, note = self._validate_operator_decision(operator, note)
         approval_repo = OperatorApprovalRequestRepository(session)
         intent = self._get_order_intent(order_intent_id)
         approval = self._get_intent_approval(approval_repo, intent)
@@ -339,6 +343,11 @@ class PreLiveSafetyService:
             return self._blocked(
                 "blocked_live_mode_unavailable",
                 "live broker mode is unavailable for pre-live safety",
+            )
+        if not self._is_valid_order_intent(policy_input):
+            return self._blocked(
+                "blocked_invalid_order_intent",
+                "order intent is malformed",
             )
         if policy_input.kill_switch_active:
             return self._blocked(
@@ -619,12 +628,26 @@ class PreLiveSafetyService:
             return market_value - reduction
         return market_value
 
+    def _is_valid_order_intent(self, policy_input: SafetyPolicyInput) -> bool:
+        return (
+            policy_input.quantity > 0
+            and policy_input.side_value in _VALID_ORDER_SIDES
+            and policy_input.order_type_value in _VALID_ORDER_TYPES
+        )
+
     def _equity(self, policy_input: SafetyPolicyInput) -> Decimal:
         return _decimal(policy_input.cash) + _decimal(policy_input.market_value)
 
     def _validate_broker_mode(self, broker_mode: str) -> None:
         if broker_mode not in _VALID_BROKER_MODES:
             raise ValueError(f"invalid broker mode: {broker_mode}")
+
+    def _validate_operator_decision(self, operator: str, note: str) -> tuple[str, str]:
+        operator = operator.strip()
+        note = note.strip()
+        if not operator or not note:
+            raise ValueError("operator and note are required")
+        return operator, note
 
     def _get_order_intent(self, order_intent_id: int) -> ExecutionOrderIntentORM:
         intent = ExecutionOrderIntentRepository(self._require_session()).get(

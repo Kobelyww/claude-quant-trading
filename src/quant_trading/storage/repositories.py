@@ -1914,6 +1914,8 @@ class SafetyIncidentRepository:
         operator: str,
         resolved_at: datetime,
     ) -> SafetyIncidentORM:
+        if row.status == "resolved":
+            raise ValueError("incident is already resolved")
         row.status = "resolved"
         row.resolved_by = _cap_text(operator, 128)
         row.resolved_at = resolved_at

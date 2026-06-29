@@ -254,6 +254,18 @@ def test_incident_acknowledge_resolve_and_invalid_transition_mapping():
     assert resolve.status_code == 200
     assert resolve.json()["status"] == "resolved"
     assert resolve.json()["resolved_by"] == "ops lead"
+    first_resolved_at = resolve.json()["resolved_at"]
+
+    duplicate_resolve = client.post(
+        f"/ops/incidents/{incident_id}/resolve",
+        json={"operator": "ops lead", "note": "already recovered"},
+    )
+    assert duplicate_resolve.status_code == 409
+    assert duplicate_resolve.json() == {"detail": "incident is already resolved"}
+
+    persisted = client.get("/ops/incidents").json()[0]
+    assert persisted["id"] == incident_id
+    assert persisted["resolved_at"] == first_resolved_at
 
     conflict = client.post(
         f"/ops/incidents/{incident_id}/acknowledge",

@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
 
 from quant_trading.operations.readiness import build_operations_readiness
 from quant_trading.operations.safety import PreLiveSafetyDecision, PreLiveSafetyService
@@ -19,7 +20,6 @@ from quant_trading.storage.models import (
     SafetyIncidentORM,
 )
 from quant_trading.storage.repositories import (
-    ExecutionOrderDecisionRepository,
     ExecutionOrderIntentRepository,
     ExecutionSafetyStateRepository,
     KillSwitchEventRepository,
@@ -331,10 +331,17 @@ def _order_intent_payload(
 
 
 def _decisions_for_intent(session, order_intent_id: int) -> list[dict[str, Any]]:
+    rows = session.scalars(
+        select(ExecutionOrderDecisionORM)
+        .where(ExecutionOrderDecisionORM.order_intent_id == order_intent_id)
+        .order_by(
+            ExecutionOrderDecisionORM.created_at.asc(),
+            ExecutionOrderDecisionORM.id.asc(),
+        )
+    ).all()
     return [
         _order_decision_payload(row)
-        for row in ExecutionOrderDecisionRepository(session).list_recent(limit=100)
-        if row.order_intent_id == order_intent_id
+        for row in rows
     ]
 
 

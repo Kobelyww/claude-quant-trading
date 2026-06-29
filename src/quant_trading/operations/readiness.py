@@ -41,12 +41,15 @@ def build_operations_readiness(
         reasons.append("global_kill_switch_active")
     if open_critical_incidents:
         reasons.append("open_critical_incidents")
+    if open_warning_incidents:
+        reasons.append("open_warning_incidents")
     if pending_approvals:
         reasons.append("pending_operator_approvals")
 
     pre_live_safe = (
         not safety_state.kill_switch_active
         and open_critical_incidents == 0
+        and open_warning_incidents == 0
         and pending_approvals == 0
     )
 

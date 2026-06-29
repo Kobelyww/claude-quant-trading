@@ -22,6 +22,8 @@ from quant_trading.storage.models import (
     SafetyIncidentORM,
 )
 from quant_trading.storage.repositories import (
+    ExecutionOrderDecisionRepository,
+    ExecutionOrderIntentRepository,
     OperatorApprovalRequestRepository,
     SafetyIncidentRepository,
 )
@@ -73,6 +75,32 @@ def _policy_input(client_order_id: str = "ops-order-1", **overrides) -> SafetyPo
     }
     payload.update(overrides)
     return SafetyPolicyInput(**payload)
+
+
+def _order_intent_payload(now: datetime, **overrides):
+    payload = {
+        "source_type": "paper_run",
+        "source_id": 7,
+        "paper_run_id": None,
+        "paper_order_id": None,
+        "client_order_id": "paper-7-11",
+        "symbol": "000001",
+        "instrument_id": 1,
+        "side": "buy",
+        "order_type": "market",
+        "quantity": 100,
+        "limit_price": None,
+        "estimated_price": Decimal("10"),
+        "estimated_notional": Decimal("1000"),
+        "broker_mode": "simulated",
+        "risk_profile_name": "default",
+        "risk_summary_payload": {"checks": []},
+        "approval_required": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    payload.update(overrides)
+    return payload
 
 
 def test_readiness_defaults_to_pre_live_non_live_posture():
@@ -188,6 +216,53 @@ def test_acknowledged_critical_incident_blocks_readiness_until_resolved():
     assert "open_critical_incidents" not in resolved_readiness["reasons"]
 
 
+def test_acknowledged_warning_incident_blocks_readiness_until_resolved():
+    client, engine = make_client()
+
+    with session_scope(engine) as session:
+        incident = SafetyIncidentRepository(session).create(
+            severity="warning",
+            category="execution_safety",
+            resource_type=None,
+            resource_id=None,
+            reason_code="provider_lagging",
+            message="provider data lagging",
+            payload={"symbol": "000001"},
+            created_at=datetime(2026, 6, 26, 9, 0, 0),
+        )
+        incident_id = incident.id
+
+    open_readiness = client.get("/ops/readiness").json()
+    assert open_readiness["open_warning_incidents"] == 1
+    assert open_readiness["safe_for_simulated_paper"] is False
+    assert open_readiness["safe_for_dry_run"] is False
+    assert "open_warning_incidents" in open_readiness["reasons"]
+
+    acknowledge = client.post(
+        f"/ops/incidents/{incident_id}/acknowledge",
+        json={"operator": "ops lead", "note": "monitoring provider"},
+    )
+    assert acknowledge.status_code == 200
+
+    acknowledged_readiness = client.get("/ops/readiness").json()
+    assert acknowledged_readiness["open_warning_incidents"] == 1
+    assert acknowledged_readiness["safe_for_simulated_paper"] is False
+    assert acknowledged_readiness["safe_for_dry_run"] is False
+    assert "open_warning_incidents" in acknowledged_readiness["reasons"]
+
+    resolve = client.post(
+        f"/ops/incidents/{incident_id}/resolve",
+        json={"operator": "ops lead", "note": "provider caught up"},
+    )
+    assert resolve.status_code == 200
+
+    resolved_readiness = client.get("/ops/readiness").json()
+    assert resolved_readiness["open_warning_incidents"] == 0
+    assert resolved_readiness["safe_for_simulated_paper"] is True
+    assert resolved_readiness["safe_for_dry_run"] is True
+    assert "open_warning_incidents" not in resolved_readiness["reasons"]
+
+
 def test_kill_switch_enable_disable_writes_events_and_updates_readiness():
     client, engine = make_client()
 
@@ -300,6 +375,13 @@ def test_operations_command_routes_are_auth_protected_when_auth_enabled():
     )
     assert authorized.status_code == 200
 
+    incident_command = client.post(
+        "/ops/incidents/1/resolve",
+        json={"operator": "ops lead", "note": "resolve"},
+    )
+    assert incident_command.status_code == 401
+    assert incident_command.json() == {"detail": "Unauthorized"}
+
 
 def test_operations_commands_reject_blank_operator_and_reason_or_note():
     client, _ = make_client()
@@ -368,3 +450,42 @@ def test_order_intent_get_includes_decisions_and_approval_404_409_mapping():
         )
         assert intent.status == "operator_approved"
         assert approval.status == "approved"
+
+
+def test_order_intent_detail_loads_decisions_scoped_to_target_intent():
+    client, engine = make_client()
+    now = datetime(2026, 6, 26, 9, 30, 0)
+
+    with session_scope(engine) as session:
+        intent_repo = ExecutionOrderIntentRepository(session)
+        target_intent, _ = intent_repo.get_or_create(
+            **_order_intent_payload(now, client_order_id="target-intent")
+        )
+        other_intent, _ = intent_repo.get_or_create(
+            **_order_intent_payload(now, client_order_id="other-intent")
+        )
+        decision_repo = ExecutionOrderDecisionRepository(session)
+        decision_repo.record(
+            order_intent_id=target_intent.id,
+            decision_type="blocked",
+            reason_code="target_reason",
+            message="target decision",
+            policy_payload={"target": True},
+            created_at=now,
+        )
+        for index in range(101):
+            decision_repo.record(
+                order_intent_id=other_intent.id,
+                decision_type="blocked",
+                reason_code=f"other_reason_{index}",
+                message="other decision",
+                policy_payload={"target": False, "index": index},
+                created_at=now + timedelta(minutes=index + 1),
+            )
+        target_intent_id = target_intent.id
+
+    detail = client.get(f"/ops/order-intents/{target_intent_id}")
+
+    assert detail.status_code == 200
+    decisions = detail.json()["decisions"]
+    assert [decision["reason_code"] for decision in decisions] == ["target_reason"]

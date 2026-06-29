@@ -1399,7 +1399,6 @@ def _order_intent_comparison_payload(
     broker_mode: str,
     risk_profile_name: str,
     risk_summary_payload_digest: str,
-    risk_summary_payload: str,
 ) -> dict:
     return {
         "source_type": source_type,
@@ -1418,7 +1417,6 @@ def _order_intent_comparison_payload(
         "broker_mode": broker_mode,
         "risk_profile_name": risk_profile_name,
         "risk_summary_payload_digest": risk_summary_payload_digest,
-        "risk_summary_payload": json.loads(risk_summary_payload),
     }
 
 
@@ -1440,7 +1438,6 @@ def _order_intent_row_payload(row: ExecutionOrderIntentORM) -> dict:
         broker_mode=row.broker_mode,
         risk_profile_name=row.risk_profile_name,
         risk_summary_payload_digest=row.risk_summary_payload_digest,
-        risk_summary_payload=row.risk_summary_payload,
     )
 
 
@@ -1567,7 +1564,6 @@ class ExecutionOrderIntentRepository:
             broker_mode=broker_mode,
             risk_profile_name=risk_profile_name,
             risk_summary_payload_digest=payload_digest,
-            risk_summary_payload=payload_json,
         )
         existing = self.get_by_client_order_id(client_order_id)
         if existing is not None:

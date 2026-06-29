@@ -202,6 +202,8 @@ class PreLiveSafetyService:
         safety_state = ExecutionSafetyStateRepository(session).get_or_create_global(now)
         merged_input = self._with_safety_state(policy_input, safety_state)
         policy_decision = self._evaluate_policy(merged_input)
+        estimated_price = self._safe_estimated_price(merged_input)
+        estimated_notional = self._safe_order_notional(merged_input)
         intent, created = intent_repo.get_or_create(
             source_type=merged_input.source_type,
             source_id=merged_input.source_id,
@@ -214,11 +216,14 @@ class PreLiveSafetyService:
             order_type=merged_input.order_type_value,
             quantity=merged_input.quantity,
             limit_price=merged_input.limit_price,
-            estimated_price=merged_input.estimated_price,
-            estimated_notional=merged_input.order_notional,
+            estimated_price=estimated_price,
+            estimated_notional=estimated_notional,
             broker_mode=merged_input.broker_mode,
             risk_profile_name=self.profile.name,
-            risk_summary_payload=self._order_intent_payload(merged_input),
+            risk_summary_payload=self._order_intent_payload(
+                merged_input,
+                estimated_notional=estimated_notional,
+            ),
             approval_required=policy_decision.decision == "approval_required",
             created_at=now,
             updated_at=now,
@@ -460,7 +465,11 @@ class PreLiveSafetyService:
         self._record_decision(
             intent,
             policy_decision,
-            self._policy_payload(policy_input, policy_decision),
+            self._policy_payload(
+                policy_input,
+                policy_decision,
+                estimated_notional=self._safe_order_notional(policy_input),
+            ),
             now,
         )
         return PreLiveSafetyDecision(
@@ -507,7 +516,14 @@ class PreLiveSafetyService:
         self,
         policy_input: SafetyPolicyInput,
         policy_decision: PolicyDecision,
+        *,
+        estimated_notional: Decimal | None = None,
     ) -> dict:
+        estimated_notional = (
+            self._safe_order_notional(policy_input)
+            if estimated_notional is None
+            else estimated_notional
+        )
         return {
             "profile_name": self.profile.name,
             "client_order_id": policy_input.client_order_id,
@@ -517,7 +533,7 @@ class PreLiveSafetyService:
             "order_type": policy_input.order_type_value,
             "quantity": policy_input.quantity,
             "estimated_price": policy_input.estimated_price,
-            "estimated_notional": policy_input.order_notional,
+            "estimated_notional": estimated_notional,
             "broker_mode": policy_input.broker_mode,
             "latest_bar_timestamp": (
                 policy_input.latest_bar.timestamp if policy_input.latest_bar else None
@@ -538,7 +554,17 @@ class PreLiveSafetyService:
             "broker_submission_allowed": policy_decision.broker_submission_allowed,
         }
 
-    def _order_intent_payload(self, policy_input: SafetyPolicyInput) -> dict:
+    def _order_intent_payload(
+        self,
+        policy_input: SafetyPolicyInput,
+        *,
+        estimated_notional: Decimal | None = None,
+    ) -> dict:
+        estimated_notional = (
+            self._safe_order_notional(policy_input)
+            if estimated_notional is None
+            else estimated_notional
+        )
         return {
             "profile_name": self.profile.name,
             "client_order_id": policy_input.client_order_id,
@@ -548,7 +574,7 @@ class PreLiveSafetyService:
             "order_type": policy_input.order_type_value,
             "quantity": policy_input.quantity,
             "estimated_price": policy_input.estimated_price,
-            "estimated_notional": policy_input.order_notional,
+            "estimated_notional": estimated_notional,
             "broker_mode": policy_input.broker_mode,
             "latest_bar_timestamp": (
                 policy_input.latest_bar.timestamp if policy_input.latest_bar else None
@@ -658,6 +684,17 @@ class PreLiveSafetyService:
             return False
         latest_close = _try_decimal(policy_input.latest_bar.close)
         return latest_close is not None and latest_close > 0
+
+    def _safe_order_notional(self, policy_input: SafetyPolicyInput) -> Decimal:
+        estimated_price = self._safe_estimated_price(policy_input)
+        if estimated_price <= 0:
+            return Decimal("0")
+        if not isinstance(policy_input.quantity, int):
+            return Decimal("0")
+        return estimated_price * Decimal(policy_input.quantity)
+
+    def _safe_estimated_price(self, policy_input: SafetyPolicyInput) -> Decimal:
+        return _try_decimal(policy_input.estimated_price) or Decimal("0")
 
     def _equity(self, policy_input: SafetyPolicyInput) -> Decimal:
         return _decimal(policy_input.cash) + _decimal(policy_input.market_value)

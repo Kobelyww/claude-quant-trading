@@ -131,6 +131,53 @@ def test_kill_switch_block_persists_without_approval_request():
         assert approvals == []
 
 
+@pytest.mark.parametrize(
+    ("overrides", "reason_code"),
+    [
+        ({"quantity": "bad"}, "blocked_invalid_order_intent"),
+        ({"estimated_price": "bad"}, "blocked_invalid_price"),
+    ],
+)
+def test_malformed_order_inputs_persist_blocked_decision_without_approval(
+    overrides, reason_code
+):
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 30, 0)
+    client_order_id = f"order-{reason_code}"
+
+    with session_scope(engine) as session:
+        decision = PreLiveSafetyService(session).evaluate_order_intent(
+            _policy_input(client_order_id=client_order_id, **overrides),
+            now=now,
+        )
+
+        assert decision.decision_type == "blocked"
+        assert decision.reason_code == reason_code
+        assert decision.order_status == "blocked"
+        assert decision.broker_submission_allowed is False
+        assert decision.approval_request_id is None
+
+    with session_scope(engine) as session:
+        intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.client_order_id == client_order_id
+            )
+        )
+        approvals = OperatorApprovalRequestRepository(session).list_recent()
+        decisions = ExecutionOrderDecisionRepository(session).list_recent()
+        policy_payload = json.loads(decisions[0].policy_payload)
+
+        assert intent.status == "blocked"
+        assert intent.blocked_reason_code == reason_code
+        assert intent.approval_request_id is None
+        assert approvals == []
+        assert len(decisions) == 1
+        assert decisions[0].decision_type == "blocked"
+        assert decisions[0].reason_code == reason_code
+        assert policy_payload["estimated_notional"] == "0"
+        assert policy_payload["broker_submission_allowed"] is False
+
+
 def test_evaluate_order_intent_creates_pending_request_and_approve_only_updates_state():
     engine = make_engine_with_schema()
     now = datetime(2026, 6, 26, 9, 30, 0)

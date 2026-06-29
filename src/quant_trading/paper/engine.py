@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import Engine
@@ -14,9 +14,11 @@ from quant_trading.core.enums import (
 from quant_trading.core.models import Fill
 from quant_trading.execution.broker import (
     BrokerAdapter,
+    BrokerExecutionMode,
     SimulatedBrokerAdapter,
     broker_order_request_from_intent,
 )
+from quant_trading.operations import PreLiveSafetyService, SafetyPolicyInput
 from quant_trading.portfolio.accounting import apply_fill
 from quant_trading.paper.repositories import PaperStateRepository
 from quant_trading.risk.engine import RiskEngine
@@ -48,10 +50,12 @@ class PaperTradingEngine:
         commission_rate: Decimal = Decimal("0.0003"),
         slippage_rate: Decimal = Decimal("0.001"),
         broker_adapter: BrokerAdapter | None = None,
+        enable_pre_live_safety: bool = True,
     ):
         self.engine = engine
         self.initial_cash = initial_cash
         self.risk_engine = risk_engine
+        self.enable_pre_live_safety = enable_pre_live_safety
         self.broker = broker_adapter or SimulatedBrokerAdapter(
             commission_rate=commission_rate,
             slippage_rate=slippage_rate,
@@ -150,10 +154,47 @@ class PaperTradingEngine:
                     orders_rejected += 1
                     continue
 
+                client_order_id = f"paper-{run.id}-{order.id}"
+                safety_now = self._safety_now(latest.timestamp)
+                safety_decision = None
+                if self.enable_pre_live_safety:
+                    latest_position = portfolio.positions.get(latest.instrument_id)
+                    safety_decision = PreLiveSafetyService(session).evaluate_order_intent(
+                        SafetyPolicyInput(
+                            client_order_id=client_order_id,
+                            symbol=intent.symbol,
+                            instrument_id=intent.instrument_id,
+                            side=intent.side,
+                            order_type=intent.order_type,
+                            quantity=intent.quantity,
+                            limit_price=intent.limit_price,
+                            estimated_price=intent.limit_price or latest.close,
+                            broker_mode=BrokerExecutionMode(self.broker.mode),
+                            latest_bar=latest,
+                            as_of=safety_now,
+                            cash=portfolio.cash,
+                            market_value=portfolio.market_value,
+                            peak_equity=portfolio.peak_equity or portfolio.equity,
+                            daily_turnover=Decimal("0"),
+                            daily_order_count=0,
+                            position_quantity=(
+                                latest_position.quantity if latest_position is not None else 0
+                            ),
+                            source_type="paper_run",
+                            source_id=run.id,
+                            paper_run_id=run.id,
+                            paper_order_id=order.id,
+                        ),
+                        now=safety_now,
+                    )
+                    if not safety_decision.broker_submission_allowed:
+                        repository.mark_order_skipped(order, safety_decision.reason_code)
+                        continue
+
                 request = broker_order_request_from_intent(
                     intent,
                     latest,
-                    client_order_id=f"paper-{run.id}-{order.id}",
+                    client_order_id=client_order_id,
                 )
                 broker_result = self.broker.submit_order(request, latest)
                 BrokerOrderEventRepository(session).record_from_broker_result(
@@ -163,6 +204,11 @@ class PaperTradingEngine:
                     result=broker_result,
                     created_at=latest.timestamp,
                 )
+                if safety_decision is not None and safety_decision.order_intent_id is not None:
+                    PreLiveSafetyService(session).mark_order_intent_submitted(
+                        safety_decision.order_intent_id,
+                        submitted_at=safety_now,
+                    )
                 if broker_result.fill is None:
                     repository.mark_order_skipped(order, decision.decision.value)
                     continue
@@ -270,6 +316,14 @@ class PaperTradingEngine:
             currency=currency,
             occurred_at=fill.filled_at,
         )
+
+    @staticmethod
+    def _safety_now(timestamp: date | datetime | str) -> datetime:
+        if isinstance(timestamp, datetime):
+            return timestamp
+        if isinstance(timestamp, date):
+            return datetime.combine(timestamp, datetime.min.time())
+        return datetime.fromisoformat(str(timestamp))
 
     def _strategy_config(self, strategy: Strategy, strategy_name: str) -> dict:
         config = {"strategy_name": strategy_name}

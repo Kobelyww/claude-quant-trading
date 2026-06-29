@@ -365,6 +365,24 @@ class PreLiveSafetyService:
             approval_request_id=approval.id,
         )
 
+    def mark_order_intent_submitted(
+        self,
+        order_intent_id: int,
+        *,
+        submitted_at: datetime | None = None,
+    ) -> ExecutionOrderIntentORM:
+        session = self._require_session()
+        submitted_at = submitted_at or datetime.utcnow()
+        intent = self._get_order_intent(order_intent_id)
+        ExecutionOrderStateMachine.validate(intent.status, "submitted")
+        return ExecutionOrderIntentRepository(session).set_status(
+            intent,
+            "submitted",
+            submitted_at,
+            approval_required=False,
+            submitted_at=submitted_at,
+        )
+
     def _evaluate_policy(self, policy_input: SafetyPolicyInput) -> PolicyDecision:
         self._validate_broker_mode(policy_input.broker_mode)
         if policy_input.broker_mode == "live":

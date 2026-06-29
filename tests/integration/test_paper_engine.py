@@ -18,7 +18,9 @@ from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.migrate_legacy import import_legacy_sqlite
 from quant_trading.storage.models import (
     CashLedgerORM,
+    ExecutionOrderIntentORM,
     MarketBarORM,
+    OperatorApprovalRequestORM,
     PaperFillORM,
     PaperOrderORM,
     PaperPositionORM,
@@ -26,7 +28,7 @@ from quant_trading.storage.models import (
     PortfolioSnapshotORM,
     RiskDecisionORM,
 )
-from quant_trading.storage.repositories import BrokerOrderEventRepository
+from quant_trading.storage.repositories import BrokerOrderEventRepository, ExecutionSafetyStateRepository
 
 
 @dataclass
@@ -75,6 +77,24 @@ class OversizedBuyStrategy:
 
 
 @dataclass
+class SizedBuyStrategy:
+    quantity: int
+    name: str = "sized_buy"
+
+    def on_bar(self, bars, portfolio):
+        latest = bars[-1]
+        return [
+            OrderIntent(
+                instrument_id=latest.instrument_id,
+                symbol=latest.symbol,
+                side=OrderSide.BUY,
+                quantity=self.quantity,
+                reason="paper_tick_sized_buy",
+            )
+        ]
+
+
+@dataclass
 class SellAllStrategy:
     name: str = "sell_all"
 
@@ -94,7 +114,7 @@ class SellAllStrategy:
         ]
 
 
-def make_paper_engine(legacy_sqlite_db: Path):
+def make_paper_engine(legacy_sqlite_db: Path, max_order_value: Decimal = Decimal("100000")):
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
     import_legacy_sqlite(legacy_sqlite_db, engine)
@@ -107,7 +127,7 @@ def make_paper_engine(legacy_sqlite_db: Path):
                     StrategyStatusRule(),
                     NoTradeWithoutDataRule(),
                     PriceSanityRule(),
-                    MaxOrderValueRule(max_order_value=Decimal("100000")),
+                    MaxOrderValueRule(max_order_value=max_order_value),
                 ]
             ),
         ),
@@ -160,6 +180,12 @@ def add_later_bar(engine) -> Decimal:
             )
         )
     return later_close
+
+
+def quantity_for_notional(engine, target_notional: Decimal) -> int:
+    with session_scope(engine) as session:
+        latest = session.scalar(select(MarketBarORM).order_by(MarketBarORM.timestamp.desc()))
+        return int(target_notional / latest.close) + 1
 
 
 def persisted_counts(engine, account_id: int, run_id: int) -> dict[str, int]:
@@ -233,6 +259,12 @@ def test_paper_tick_persists_approved_buy_and_is_idempotent(legacy_sqlite_db: Pa
         )
         risk_decision = session.scalar(select(RiskDecisionORM).where(RiskDecisionORM.run_id == run_id))
         broker_events = BrokerOrderEventRepository(session).list_for_run(run_id)
+        safety_intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.paper_run_id == run_id,
+                ExecutionOrderIntentORM.paper_order_id == order.id,
+            )
+        )
 
     assert first.run_id == run_id
     assert first.account_id == account_id
@@ -260,7 +292,13 @@ def test_paper_tick_persists_approved_buy_and_is_idempotent(legacy_sqlite_db: Pa
     assert risk_decision.order_id == order.id
     assert risk_decision.decision == "approved"
     assert len(broker_events) == 1
+    assert safety_intent.status == "submitted"
+    assert safety_intent.source_type == "paper_run"
+    assert safety_intent.source_id == run_id
+    assert safety_intent.client_order_id == f"paper-{run_id}-{order.id}"
+    assert safety_intent.submitted_at is not None
     assert broker_events[0].broker_mode == "simulated"
+    assert broker_events[0].client_order_id == safety_intent.client_order_id
     assert broker_events[0].status == "filled"
     assert broker_events[0].accepted is True
     assert json.loads(broker_events[0].result_payload)["has_fill"] is True
@@ -425,7 +463,7 @@ def test_rejected_strategy_status_creates_order_and_risk_decision_without_fill(
     assert ledger_rows[0].cash_after == Decimal("100000")
 
 
-def test_insufficient_cash_marks_order_skipped_without_cash_or_position_change(
+def test_insufficient_cash_is_blocked_by_pre_live_safety_without_submission(
     legacy_sqlite_db: Path,
 ):
     paper, engine = make_paper_engine(legacy_sqlite_db)
@@ -452,6 +490,13 @@ def test_insufficient_cash_marks_order_skipped_without_cash_or_position_change(
     with session_scope(engine) as session:
         order = session.scalar(select(PaperOrderORM).where(PaperOrderORM.run_id == run_id))
         risk_decision = session.scalar(select(RiskDecisionORM).where(RiskDecisionORM.run_id == run_id))
+        safety_intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.paper_run_id == run_id,
+                ExecutionOrderIntentORM.paper_order_id == order.id,
+            )
+        )
+        broker_events = BrokerOrderEventRepository(session).list_for_run(run_id)
         ledger_rows = session.scalars(
             select(CashLedgerORM)
             .where(CashLedgerORM.account_id == account_id)
@@ -464,9 +509,12 @@ def test_insufficient_cash_marks_order_skipped_without_cash_or_position_change(
     assert summary.fills_created == 0
     assert summary.risk_decision_count == 1
     assert order.status == "skipped"
-    assert order.risk_decision == "approved"
+    assert order.risk_decision == "blocked_max_gross_exposure"
     assert risk_decision.order_id == order.id
     assert risk_decision.decision == "approved"
+    assert safety_intent.status == "blocked"
+    assert safety_intent.blocked_reason_code == "blocked_max_gross_exposure"
+    assert broker_events == []
     assert persisted_counts(engine, account_id, run_id) == {
         "orders": 1,
         "fills": 0,
@@ -582,6 +630,12 @@ def test_paper_tick_with_dry_run_broker_records_order_without_fill_or_position(
             .where(PaperPositionORM.account_id == account_id)
         )
         broker_events = BrokerOrderEventRepository(session).list_for_run(run_id)
+        safety_intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.paper_run_id == run_id,
+                ExecutionOrderIntentORM.paper_order_id == order.id,
+            )
+        )
 
     assert summary.orders_created == 1
     assert summary.orders_filled == 0
@@ -592,7 +646,135 @@ def test_paper_tick_with_dry_run_broker_records_order_without_fill_or_position(
     assert position_count == 0
     assert len(dry_run_broker.submitted_requests) == 1
     assert len(broker_events) == 1
+    assert safety_intent.status == "submitted"
+    assert safety_intent.client_order_id == f"paper-{run_id}-{order.id}"
     assert broker_events[0].broker_mode == "dry_run"
+    assert broker_events[0].client_order_id == safety_intent.client_order_id
     assert broker_events[0].status == "submitted"
     assert broker_events[0].accepted is True
     assert json.loads(broker_events[0].result_payload)["has_fill"] is False
+
+
+def test_kill_switch_blocks_paper_order_before_broker_submission(
+    legacy_sqlite_db: Path,
+):
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    strategy = RecordingBuyStrategy()
+    account_id = paper.create_account(
+        name="Kill Switch Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    with session_scope(engine) as session:
+        latest = session.scalar(select(MarketBarORM).order_by(MarketBarORM.timestamp.desc()))
+        ExecutionSafetyStateRepository(session).set_kill_switch(
+            active=True,
+            operator="risk lead",
+            reason="pause paper submission",
+            now=PaperTradingEngine._safety_now(latest.timestamp),
+        )
+
+    summary = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with session_scope(engine) as session:
+        order = session.scalar(select(PaperOrderORM).where(PaperOrderORM.run_id == run_id))
+        safety_intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.paper_run_id == run_id,
+                ExecutionOrderIntentORM.paper_order_id == order.id,
+            )
+        )
+        broker_events = BrokerOrderEventRepository(session).list_for_run(run_id)
+        fill_count = session.scalar(
+            select(func.count()).select_from(PaperFillORM).where(PaperFillORM.run_id == run_id)
+        )
+        position_count = session.scalar(
+            select(func.count())
+            .select_from(PaperPositionORM)
+            .where(PaperPositionORM.account_id == account_id)
+        )
+
+    assert summary.orders_created == 1
+    assert summary.orders_filled == 0
+    assert summary.fills_created == 0
+    assert order.status == "skipped"
+    assert order.risk_decision == "blocked_global_kill_switch"
+    assert safety_intent.status == "blocked"
+    assert safety_intent.blocked_reason_code == "blocked_global_kill_switch"
+    assert broker_events == []
+    assert fill_count == 0
+    assert position_count == 0
+
+
+def test_manual_approval_required_blocks_paper_broker_submission(
+    legacy_sqlite_db: Path,
+):
+    paper, engine = make_paper_engine(legacy_sqlite_db, max_order_value=Decimal("1000000"))
+    quantity = quantity_for_notional(engine, Decimal("60000"))
+    strategy = SizedBuyStrategy(quantity=quantity)
+    account_id = paper.create_account(
+        name="Manual Approval Paper",
+        initial_cash=Decimal("1000000"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    summary = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with session_scope(engine) as session:
+        order = session.scalar(select(PaperOrderORM).where(PaperOrderORM.run_id == run_id))
+        safety_intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.paper_run_id == run_id,
+                ExecutionOrderIntentORM.paper_order_id == order.id,
+            )
+        )
+        approval = session.scalar(
+            select(OperatorApprovalRequestORM).where(
+                OperatorApprovalRequestORM.resource_type == "execution_order_intent",
+                OperatorApprovalRequestORM.resource_id == safety_intent.id,
+            )
+        )
+        broker_events = BrokerOrderEventRepository(session).list_for_run(run_id)
+        fill_count = session.scalar(
+            select(func.count()).select_from(PaperFillORM).where(PaperFillORM.run_id == run_id)
+        )
+        position_count = session.scalar(
+            select(func.count())
+            .select_from(PaperPositionORM)
+            .where(PaperPositionORM.account_id == account_id)
+        )
+
+    assert summary.orders_created == 1
+    assert summary.orders_filled == 0
+    assert summary.fills_created == 0
+    assert order.status == "skipped"
+    assert order.risk_decision == "manual_approval_required_notional"
+    assert safety_intent.status == "approval_required"
+    assert safety_intent.approval_required is True
+    assert approval.status == "pending"
+    assert approval.reason_code == "manual_approval_required_notional"
+    assert broker_events == []
+    assert fill_count == 0
+    assert position_count == 0

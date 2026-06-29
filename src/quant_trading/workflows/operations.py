@@ -221,6 +221,7 @@ def _make_paper_engine(
         ),
         commission_rate=DEFAULT_COMMISSION_RATE,
         slippage_rate=DEFAULT_SLIPPAGE_RATE,
+        enable_pre_live_safety=True,
     )
 
 

@@ -636,6 +636,11 @@ class ExecutionOrderIntentORM(Base):
     status: Mapped[str] = mapped_column(String(32), default="created", index=True)
     risk_profile_name: Mapped[str] = mapped_column(String(128), index=True)
     risk_summary_payload: Mapped[str] = mapped_column(Text, default="{}")
+    risk_summary_payload_digest: Mapped[str] = mapped_column(
+        String(64),
+        default="",
+        index=True,
+    )
     approval_required: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     approval_request_id: Mapped[int | None] = mapped_column(
         ForeignKey("operator_approval_requests.id"),

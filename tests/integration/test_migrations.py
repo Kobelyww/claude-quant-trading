@@ -278,6 +278,7 @@ def _assert_pre_live_safety_ops_schema(inspector) -> None:
         "status",
         "risk_profile_name",
         "risk_summary_payload",
+        "risk_summary_payload_digest",
         "approval_required",
         "approval_request_id",
         "blocked_reason_code",
@@ -302,6 +303,9 @@ def _assert_pre_live_safety_ops_schema(inspector) -> None:
         "ix_execution_order_intents_broker_mode": ("broker_mode",),
         "ix_execution_order_intents_status": ("status",),
         "ix_execution_order_intents_risk_profile_name": ("risk_profile_name",),
+        "ix_execution_order_intents_risk_summary_payload_digest": (
+            "risk_summary_payload_digest",
+        ),
         "ix_execution_order_intents_approval_required": ("approval_required",),
         "ix_execution_order_intents_approval_request_id": ("approval_request_id",),
         "ix_execution_order_intents_blocked_reason_code": ("blocked_reason_code",),

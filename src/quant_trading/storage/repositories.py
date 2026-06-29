@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+import hashlib
 import json
 
 from sqlalchemy import or_, select, update
@@ -43,6 +44,20 @@ def _json_default(value):
 
 def _json_dumps(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=_json_default)
+
+
+def _json_dumps_canonical(value: dict) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=_json_default,
+    )
+
+
+def _ops_payload_digest(value: dict) -> str:
+    return hashlib.sha256(_json_dumps_canonical(value).encode("utf-8")).hexdigest()
 
 
 def _cap_text(value: str, limit: int) -> str:
@@ -1383,6 +1398,7 @@ def _order_intent_comparison_payload(
     estimated_notional,
     broker_mode: str,
     risk_profile_name: str,
+    risk_summary_payload_digest: str,
     risk_summary_payload: str,
 ) -> dict:
     return {
@@ -1401,6 +1417,7 @@ def _order_intent_comparison_payload(
         "estimated_notional": _normalize_decimal(estimated_notional),
         "broker_mode": broker_mode,
         "risk_profile_name": risk_profile_name,
+        "risk_summary_payload_digest": risk_summary_payload_digest,
         "risk_summary_payload": json.loads(risk_summary_payload),
     }
 
@@ -1422,6 +1439,7 @@ def _order_intent_row_payload(row: ExecutionOrderIntentORM) -> dict:
         estimated_notional=row.estimated_notional,
         broker_mode=row.broker_mode,
         risk_profile_name=row.risk_profile_name,
+        risk_summary_payload_digest=row.risk_summary_payload_digest,
         risk_summary_payload=row.risk_summary_payload,
     )
 
@@ -1531,6 +1549,7 @@ class ExecutionOrderIntentRepository:
         updated_at: datetime,
     ) -> tuple[ExecutionOrderIntentORM, bool]:
         payload_json = _ops_json_dumps(risk_summary_payload)
+        payload_digest = _ops_payload_digest(risk_summary_payload)
         expected_payload = _order_intent_comparison_payload(
             source_type=source_type,
             source_id=source_id,
@@ -1547,6 +1566,7 @@ class ExecutionOrderIntentRepository:
             estimated_notional=estimated_notional,
             broker_mode=broker_mode,
             risk_profile_name=risk_profile_name,
+            risk_summary_payload_digest=payload_digest,
             risk_summary_payload=payload_json,
         )
         existing = self.get_by_client_order_id(client_order_id)
@@ -1572,6 +1592,7 @@ class ExecutionOrderIntentRepository:
             status="created",
             risk_profile_name=risk_profile_name,
             risk_summary_payload=payload_json,
+            risk_summary_payload_digest=payload_digest,
             approval_required=approval_required,
             created_at=created_at,
             updated_at=updated_at,
@@ -1668,6 +1689,8 @@ class ExecutionOrderDecisionRepository:
 
 
 class OperatorApprovalRequestRepository:
+    _DECISION_STATUSES = frozenset({"approved", "rejected", "expired", "cancelled"})
+
     def __init__(self, session: Session):
         self.session = session
 
@@ -1748,6 +1771,8 @@ class OperatorApprovalRequestRepository:
     ) -> OperatorApprovalRequestORM:
         if row.status != "pending":
             raise ValueError("approval request is not pending")
+        if status not in self._DECISION_STATUSES:
+            raise ValueError(f"invalid approval decision status: {status}")
         row.status = status
         row.decided_by = _cap_text(operator, 128)
         row.operator_note = _cap_text(note, 2048)

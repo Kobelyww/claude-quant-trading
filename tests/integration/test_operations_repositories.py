@@ -144,6 +144,39 @@ def test_order_intent_repository_rejects_conflicting_duplicate_client_order_id()
             )
 
 
+def test_order_intent_repository_compares_unsanitized_payload_for_idempotency():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 0, 0)
+    common_prefix = "a" * 600
+    payload = _order_intent_payload(
+        now,
+        client_order_id="paper-long-risk-summary",
+        risk_summary_payload={"checks": [{"details": common_prefix + "first"}]},
+    )
+
+    with session_scope(engine) as session:
+        repo = ExecutionOrderIntentRepository(session)
+        row, created = repo.get_or_create(**payload)
+        same_row, same_created = repo.get_or_create(**payload)
+
+        assert created is True
+        assert same_created is False
+        assert same_row.id == row.id
+
+        with pytest.raises(
+            ValueError,
+            match="^client_order_id already exists with different payload$",
+        ):
+            repo.get_or_create(
+                **{
+                    **payload,
+                    "risk_summary_payload": {
+                        "checks": [{"details": common_prefix + "second"}],
+                    },
+                }
+            )
+
+
 def test_order_intent_status_caps_blocked_reason():
     engine = make_engine_with_schema()
     now = datetime(2026, 6, 26, 9, 0, 0)
@@ -383,6 +416,37 @@ def test_decisions_approvals_and_incidents_are_persisted_with_capped_messages():
         assert approval.reason_code == "requires_operator"
         assert len(incident.message) == 2048
         assert json.loads(incident.payload)["order_intent_id"] == intent.id
+
+
+def test_approval_repository_rejects_invalid_decision_status_without_persisting():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 0, 0)
+
+    with session_scope(engine) as session:
+        approval = OperatorApprovalRequestRepository(session).create_pending(
+            resource_type="execution_order_intent",
+            resource_id=31,
+            reason_code="requires_operator",
+            requested_by="system",
+            requested_at=now,
+            expires_at=None,
+        )
+
+        with pytest.raises(ValueError, match="^invalid approval decision status: typo$"):
+            OperatorApprovalRequestRepository(session).decide(
+                approval,
+                status="typo",
+                operator="risk lead",
+                note="bad status",
+                decided_at=now + timedelta(minutes=1),
+            )
+
+        session.expire(approval)
+        persisted = session.get(OperatorApprovalRequestORM, approval.id)
+        assert persisted.status == "pending"
+        assert persisted.decided_by is None
+        assert persisted.decided_at is None
+        assert persisted.operator_note == ""
 
 
 def test_ops_payloads_are_bounded_and_sanitize_secret_like_values():

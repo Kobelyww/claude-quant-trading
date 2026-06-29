@@ -194,6 +194,12 @@ def upgrade() -> None:
         sa.Column("risk_profile_name", sa.String(length=128), nullable=False),
         sa.Column("risk_summary_payload", sa.Text(), nullable=False, server_default="{}"),
         sa.Column(
+            "risk_summary_payload_digest",
+            sa.String(length=64),
+            nullable=False,
+            server_default="",
+        ),
+        sa.Column(
             "approval_required",
             sa.Boolean(),
             nullable=False,
@@ -226,6 +232,9 @@ def upgrade() -> None:
         "ix_execution_order_intents_broker_mode": ["broker_mode"],
         "ix_execution_order_intents_status": ["status"],
         "ix_execution_order_intents_risk_profile_name": ["risk_profile_name"],
+        "ix_execution_order_intents_risk_summary_payload_digest": [
+            "risk_summary_payload_digest"
+        ],
         "ix_execution_order_intents_approval_required": ["approval_required"],
         "ix_execution_order_intents_approval_request_id": ["approval_request_id"],
         "ix_execution_order_intents_blocked_reason_code": ["blocked_reason_code"],
@@ -356,6 +365,7 @@ def downgrade() -> None:
         "ix_execution_order_intents_blocked_reason_code",
         "ix_execution_order_intents_approval_request_id",
         "ix_execution_order_intents_approval_required",
+        "ix_execution_order_intents_risk_summary_payload_digest",
         "ix_execution_order_intents_risk_profile_name",
         "ix_execution_order_intents_status",
         "ix_execution_order_intents_broker_mode",

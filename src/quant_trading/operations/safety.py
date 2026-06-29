@@ -113,7 +113,7 @@ class SafetyPolicyInput:
     daily_turnover: Decimal = Decimal("0")
     daily_order_count: int = 0
     position_quantity: int = 0
-    source_type: str = "manual"
+    source_type: str = "manual_test"
     source_id: int | None = None
     paper_run_id: int | None = None
     paper_order_id: int | None = None

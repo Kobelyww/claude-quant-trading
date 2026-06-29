@@ -39,7 +39,7 @@ def _bar(timestamp=date(2026, 6, 26), close=Decimal("10")) -> Bar:
 
 def _policy_input(client_order_id="order-1", **overrides) -> SafetyPolicyInput:
     payload = {
-        "source_type": "paper_order",
+        "source_type": "paper_run",
         "source_id": 11,
         "paper_run_id": None,
         "paper_order_id": None,

@@ -86,6 +86,10 @@ def test_default_pre_live_risk_profile_matches_policy_spec():
     assert profile.allowed_broker_modes == {"simulated", "dry_run"}
 
 
+def test_safety_policy_input_defaults_to_manual_test_source_type():
+    assert _policy_input().source_type == "manual_test"
+
+
 def test_execution_order_state_machine_allows_only_specified_transitions():
     allowed = [
         ("created", "risk_approved"),

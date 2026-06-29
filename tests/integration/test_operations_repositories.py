@@ -35,7 +35,7 @@ def make_engine_with_schema():
 
 def _order_intent_payload(now: datetime, **overrides):
     payload = {
-        "source_type": "paper_order",
+        "source_type": "paper_run",
         "source_id": 7,
         "paper_run_id": None,
         "paper_order_id": None,
@@ -455,7 +455,7 @@ def test_decisions_approvals_and_incidents_are_persisted_with_capped_messages():
 
     with session_scope(engine) as session:
         intent = ExecutionOrderIntentORM(
-            source_type="manual",
+            source_type="manual_test",
             source_id=None,
             client_order_id="manual-1",
             symbol="000001",

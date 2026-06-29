@@ -661,6 +661,8 @@ class PreLiveSafetyService:
         as_of_date = _try_date_only(policy_input.as_of)
         if latest_date is None or as_of_date is None:
             return True
+        if latest_date > as_of_date:
+            return True
         return (as_of_date - latest_date).days > self.profile.stale_data_max_age_days
 
     def _drawdown(self, policy_input: SafetyPolicyInput) -> Decimal:
@@ -765,6 +767,8 @@ class PreLiveSafetyService:
             raise ValueError(f"invalid broker mode: {broker_mode}")
 
     def _validate_operator_decision(self, operator: str, note: str) -> tuple[str, str]:
+        if not isinstance(operator, str) or not isinstance(note, str):
+            raise ValueError("operator and note are required")
         operator = operator.strip()
         note = note.strip()
         if not operator or not note:

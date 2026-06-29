@@ -396,6 +396,22 @@ def test_stale_datetime_latest_bar_is_compared_as_date_not_datetime():
     assert decision.reason_code == "blocked_stale_market_data"
 
 
+def test_future_dated_latest_bar_is_blocked_as_stale_market_data():
+    service = PreLiveSafetyService()
+    now = date(2026, 6, 26)
+
+    decision = service.evaluate_policy(
+        _policy_input(
+            latest_bar=_bar_with(timestamp=now + timedelta(days=1)),
+            as_of=now,
+        )
+    )
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_stale_market_data"
+    assert decision.broker_submission_allowed is False
+
+
 def test_buy_order_blocks_when_post_order_exposure_exceeds_limit():
     service = PreLiveSafetyService()
 

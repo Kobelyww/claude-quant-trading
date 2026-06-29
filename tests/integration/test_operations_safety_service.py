@@ -472,10 +472,14 @@ def test_reject_order_intent_blocks_order_without_submission():
         ("approve", "   ", "approved for pre-live dry run"),
         ("approve", "risk lead", ""),
         ("approve", "risk lead", "   "),
+        ("approve", 123, "approved for pre-live dry run"),
+        ("approve", "risk lead", 123),
         ("reject", "", "not for this session"),
         ("reject", "   ", "not for this session"),
         ("reject", "risk lead", ""),
         ("reject", "risk lead", "   "),
+        ("reject", 123, "not for this session"),
+        ("reject", "risk lead", 123),
     ],
 )
 def test_approve_reject_require_operator_and_note_without_state_change(

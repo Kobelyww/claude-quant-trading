@@ -97,7 +97,7 @@ def test_kill_switch_blocks_before_other_non_live_gates():
         _policy_input(kill_switch_active=True, broker_mode="disabled")
     )
 
-    assert decision.decision == "blocked"
+    assert decision.decision_type == "blocked"
     assert decision.reason_code == "blocked_global_kill_switch"
     assert decision.broker_submission_allowed is False
 
@@ -109,7 +109,7 @@ def test_notional_over_manual_threshold_requires_operator_approval():
         _policy_input(quantity=6000, estimated_price=Decimal("10"))
     )
 
-    assert decision.decision == "approval_required"
+    assert decision.decision_type == "approval_required"
     assert decision.reason_code == "manual_approval_required_notional"
     assert decision.broker_submission_allowed is False
 
@@ -121,7 +121,7 @@ def test_sell_without_position_requires_operator_approval_when_profile_requires_
         _policy_input(side=OrderSide.SELL, quantity=100, position_quantity=0)
     )
 
-    assert decision.decision == "approval_required"
+    assert decision.decision_type == "approval_required"
     assert decision.reason_code == "manual_approval_required_sell_without_position"
     assert decision.broker_submission_allowed is False
 
@@ -133,7 +133,7 @@ def test_live_mode_is_always_blocked_even_when_enabled():
         _policy_input(broker_mode="live", live_enabled=True)
     )
 
-    assert decision.decision == "blocked"
+    assert decision.decision_type == "blocked"
     assert decision.reason_code == "blocked_live_mode_unavailable"
     assert decision.broker_submission_allowed is False
 
@@ -143,7 +143,7 @@ def test_simulated_order_within_limits_is_approved():
 
     decision = service.evaluate_policy(_policy_input())
 
-    assert decision.decision == "approved"
+    assert decision.decision_type == "approved"
     assert decision.reason_code == "approved"
     assert decision.broker_submission_allowed is True
 
@@ -166,7 +166,7 @@ def test_stale_datetime_latest_bar_is_compared_as_date_not_datetime():
         _policy_input(latest_bar=latest_bar, as_of=date(2026, 6, 26))
     )
 
-    assert decision.decision == "blocked"
+    assert decision.decision_type == "blocked"
     assert decision.reason_code == "blocked_stale_market_data"
 
 
@@ -189,5 +189,5 @@ def test_policy_block_reason_codes(overrides, reason_code):
 
     decision = service.evaluate_policy(_policy_input(**overrides))
 
-    assert decision.decision == "blocked"
+    assert decision.decision_type == "blocked"
     assert decision.reason_code == reason_code

@@ -75,7 +75,7 @@ def test_evaluate_order_intent_persists_approved_decision_and_order_state():
             now=now,
         )
 
-        assert decision.decision == "approved"
+        assert decision.decision_type == "approved"
         assert decision.reason_code == "approved"
         assert decision.order_status == "risk_approved"
         assert decision.broker_submission_allowed is True
@@ -113,7 +113,7 @@ def test_kill_switch_block_persists_without_approval_request():
             now=now,
         )
 
-        assert decision.decision == "blocked"
+        assert decision.decision_type == "blocked"
         assert decision.reason_code == "blocked_global_kill_switch"
         assert decision.order_status == "blocked"
         assert decision.broker_submission_allowed is False
@@ -145,25 +145,31 @@ def test_evaluate_order_intent_creates_pending_request_and_approve_only_updates_
             now=now,
         )
 
-        assert decision.decision == "approval_required"
+        assert decision.decision_type == "approval_required"
         assert decision.reason_code == "manual_approval_required_notional"
         assert decision.order_status == "approval_required"
         assert decision.approval_request_id is not None
 
     with session_scope(engine) as session:
+        intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.client_order_id == "order-approval"
+            )
+        )
         approval = OperatorApprovalRequestRepository(session).list_recent(status="pending")[0]
         service = PreLiveSafetyService(session)
 
         approved = service.approve_order_intent(
-            approval.id,
+            intent.id,
             operator="risk lead",
             note="approved for pre-live dry run",
             now=now,
         )
 
-        assert approved.decision == "approved"
+        assert approved.decision_type == "approved"
         assert approved.reason_code == "approved"
         assert approved.order_status == "operator_approved"
+        assert approved.order_intent_id == intent.id
         assert approved.broker_submission_allowed is True
 
     with session_scope(engine) as session:
@@ -191,9 +197,9 @@ def test_duplicate_already_evaluated_client_order_id_skips_new_decision_record()
         first = service.evaluate_order_intent(_policy_input(), now=now)
         duplicate = service.evaluate_order_intent(_policy_input(), now=now)
 
-        assert first.decision == "approved"
-        assert duplicate.decision == "skipped"
-        assert duplicate.reason_code == "skipped_order_already_evaluated"
+        assert first.decision_type == "approved"
+        assert duplicate.decision_type == "skipped"
+        assert duplicate.reason_code == "skipped_duplicate_client_order_id"
         assert duplicate.order_status == "risk_approved"
         assert duplicate.broker_submission_allowed is False
         assert len(ExecutionOrderDecisionRepository(session).list_recent()) == 1
@@ -214,9 +220,9 @@ def test_duplicate_already_evaluated_client_order_id_skips_after_safety_state_ch
         )
         duplicate = service.evaluate_order_intent(_policy_input(), now=now)
 
-        assert first.decision == "approved"
-        assert duplicate.decision == "skipped"
-        assert duplicate.reason_code == "skipped_order_already_evaluated"
+        assert first.decision_type == "approved"
+        assert duplicate.decision_type == "skipped"
+        assert duplicate.reason_code == "skipped_duplicate_client_order_id"
         assert duplicate.order_status == "risk_approved"
         assert len(ExecutionOrderDecisionRepository(session).list_recent()) == 1
 
@@ -236,18 +242,24 @@ def test_reject_order_intent_blocks_order_without_submission():
         )
 
     with session_scope(engine) as session:
+        intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.client_order_id == "order-rejected"
+            )
+        )
         approval = OperatorApprovalRequestRepository(session).list_recent(status="pending")[0]
 
         rejected = PreLiveSafetyService(session).reject_order_intent(
-            approval.id,
+            intent.id,
             operator="risk lead",
             note="not for this session",
             now=now,
         )
 
-        assert rejected.decision == "blocked"
+        assert rejected.decision_type == "blocked"
         assert rejected.reason_code == "blocked_operator_rejected"
         assert rejected.order_status == "blocked"
+        assert rejected.order_intent_id == intent.id
         assert rejected.broker_submission_allowed is False
 
     with session_scope(engine) as session:
@@ -279,9 +291,13 @@ def test_approve_reject_invalid_approval_state_raises_without_new_decision():
             ),
             now=now,
         )
-        approval = OperatorApprovalRequestRepository(session).list_recent(status="pending")[0]
+        intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.client_order_id == "order-invalid-approval"
+            )
+        )
         PreLiveSafetyService(session).approve_order_intent(
-            approval.id,
+            intent.id,
             operator="risk lead",
             note="first decision",
             now=now,
@@ -292,7 +308,7 @@ def test_approve_reject_invalid_approval_state_raises_without_new_decision():
             match="approval request is not pending|invalid execution order transition",
         ):
             PreLiveSafetyService(session).reject_order_intent(
-                approval.id,
+                intent.id,
                 operator="risk lead",
                 note="second decision",
                 now=now,

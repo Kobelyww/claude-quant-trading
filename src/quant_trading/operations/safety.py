@@ -115,7 +115,7 @@ class SafetyPolicyInput:
 
 @dataclass(frozen=True)
 class PreLiveSafetyDecision:
-    decision: str
+    decision_type: str
     reason_code: str
     message: str
     broker_submission_allowed: bool
@@ -163,7 +163,7 @@ class PreLiveSafetyService:
     def evaluate_policy(self, policy_input: SafetyPolicyInput) -> PreLiveSafetyDecision:
         decision = self._evaluate_policy(policy_input)
         return PreLiveSafetyDecision(
-            decision=decision.decision,
+            decision_type=decision.decision,
             reason_code=decision.reason_code,
             message=decision.message,
             broker_submission_allowed=decision.broker_submission_allowed,
@@ -244,7 +244,7 @@ class PreLiveSafetyService:
 
     def approve_order_intent(
         self,
-        approval_request_id: int,
+        order_intent_id: int,
         *,
         operator: str,
         note: str = "",
@@ -253,8 +253,8 @@ class PreLiveSafetyService:
         session = self._require_session()
         now = now or datetime.utcnow()
         approval_repo = OperatorApprovalRequestRepository(session)
-        approval = self._get_approval(approval_repo, approval_request_id)
-        intent = self._get_approval_intent(approval)
+        intent = self._get_order_intent(order_intent_id)
+        approval = self._get_intent_approval(approval_repo, intent)
         ExecutionOrderStateMachine.validate(intent.status, "operator_approved")
         approval_repo.decide(
             approval,
@@ -277,7 +277,7 @@ class PreLiveSafetyService:
         )
         self._record_decision(intent, policy_decision, {}, now)
         return PreLiveSafetyDecision(
-            decision=policy_decision.decision,
+            decision_type=policy_decision.decision,
             reason_code=policy_decision.reason_code,
             message=policy_decision.message,
             broker_submission_allowed=policy_decision.broker_submission_allowed,
@@ -288,7 +288,7 @@ class PreLiveSafetyService:
 
     def reject_order_intent(
         self,
-        approval_request_id: int,
+        order_intent_id: int,
         *,
         operator: str,
         note: str = "",
@@ -297,8 +297,8 @@ class PreLiveSafetyService:
         session = self._require_session()
         now = now or datetime.utcnow()
         approval_repo = OperatorApprovalRequestRepository(session)
-        approval = self._get_approval(approval_repo, approval_request_id)
-        intent = self._get_approval_intent(approval)
+        intent = self._get_order_intent(order_intent_id)
+        approval = self._get_intent_approval(approval_repo, intent)
         ExecutionOrderStateMachine.validate(intent.status, "blocked")
         approval_repo.decide(
             approval,
@@ -323,7 +323,7 @@ class PreLiveSafetyService:
         )
         self._record_decision(intent, policy_decision, {}, now)
         return PreLiveSafetyDecision(
-            decision=policy_decision.decision,
+            decision_type=policy_decision.decision,
             reason_code=policy_decision.reason_code,
             message=policy_decision.message,
             broker_submission_allowed=policy_decision.broker_submission_allowed,
@@ -441,7 +441,7 @@ class PreLiveSafetyService:
             now,
         )
         return PreLiveSafetyDecision(
-            decision=policy_decision.decision,
+            decision_type=policy_decision.decision,
             reason_code=policy_decision.reason_code,
             message=policy_decision.message,
             broker_submission_allowed=policy_decision.broker_submission_allowed,
@@ -471,8 +471,8 @@ class PreLiveSafetyService:
         intent: ExecutionOrderIntentORM,
     ) -> PreLiveSafetyDecision:
         return PreLiveSafetyDecision(
-            decision="skipped",
-            reason_code="skipped_order_already_evaluated",
+            decision_type="skipped",
+            reason_code="skipped_duplicate_client_order_id",
             message="order intent was already evaluated",
             broker_submission_allowed=False,
             order_status=intent.status,
@@ -581,28 +581,30 @@ class PreLiveSafetyService:
     def _equity(self, policy_input: SafetyPolicyInput) -> Decimal:
         return _decimal(policy_input.cash) + _decimal(policy_input.market_value)
 
-    def _get_approval(
-        self,
-        approval_repo: OperatorApprovalRequestRepository,
-        approval_request_id: int,
-    ) -> OperatorApprovalRequestORM:
-        approval = approval_repo.get(approval_request_id)
-        if approval is None:
-            raise ValueError(f"approval request not found: {approval_request_id}")
-        return approval
-
-    def _get_approval_intent(
-        self,
-        approval: OperatorApprovalRequestORM,
-    ) -> ExecutionOrderIntentORM:
-        if approval.resource_type != "execution_order_intent":
-            raise ValueError("approval request is not for an execution order intent")
+    def _get_order_intent(self, order_intent_id: int) -> ExecutionOrderIntentORM:
         intent = ExecutionOrderIntentRepository(self._require_session()).get(
-            approval.resource_id
+            order_intent_id
         )
         if intent is None:
-            raise ValueError(f"execution order intent not found: {approval.resource_id}")
+            raise ValueError(f"execution order intent not found: {order_intent_id}")
         return intent
+
+    def _get_intent_approval(
+        self,
+        approval_repo: OperatorApprovalRequestRepository,
+        intent: ExecutionOrderIntentORM,
+    ) -> OperatorApprovalRequestORM:
+        if intent.approval_request_id is None:
+            raise ValueError("order intent has no approval request")
+        approval = approval_repo.get(intent.approval_request_id)
+        if approval is None:
+            raise ValueError(f"approval request not found: {intent.approval_request_id}")
+        if (
+            approval.resource_type != "execution_order_intent"
+            or approval.resource_id != intent.id
+        ):
+            raise ValueError("approval request does not match execution order intent")
+        return approval
 
     def _require_session(self) -> Session:
         if self.session is None:

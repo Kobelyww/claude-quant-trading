@@ -86,6 +86,69 @@ def test_default_pre_live_risk_profile_matches_policy_spec():
     assert profile.allowed_broker_modes == {"simulated", "dry_run"}
 
 
+def test_pre_live_risk_profile_accepts_validated_json_style_overrides():
+    profile = PreLiveRiskProfile.from_overrides(
+        {
+            "name": "paper_low_risk",
+            "max_single_order_notional": "25000",
+            "max_daily_order_count": 5,
+            "allowed_broker_modes": ["simulated"],
+        }
+    )
+
+    assert profile.name == "paper_low_risk"
+    assert profile.max_single_order_notional == Decimal("25000")
+    assert profile.max_daily_order_count == 5
+    assert profile.allowed_broker_modes == {"simulated"}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ([], "risk profile overrides must be an object"),
+        ({"name": ""}, "name"),
+        ({"max_single_order_notional": "-1"}, "max_single_order_notional"),
+        ({"max_gross_exposure_ratio": "0"}, "max_gross_exposure_ratio"),
+        ({"max_daily_turnover": "-1"}, "max_daily_turnover"),
+        ({"max_daily_order_count": 0}, "max_daily_order_count"),
+        ({"max_drawdown_stop_ratio": "-0.01"}, "max_drawdown_stop_ratio"),
+        ({"stale_data_max_age_days": -1}, "stale_data_max_age_days"),
+        ({"manual_approval_notional": "-1"}, "manual_approval_notional"),
+        (
+            {"manual_approval_sell_without_position": "yes"},
+            "manual_approval_sell_without_position",
+        ),
+        ({"allowed_broker_modes": ["live"]}, "allowed_broker_modes"),
+        ({"allowed_broker_modes": ["bad-mode"]}, "allowed_broker_modes"),
+        ({"allowed_broker_modes": []}, "allowed_broker_modes"),
+        ({"unknown": 1}, "unknown risk profile field"),
+    ],
+)
+def test_pre_live_risk_profile_rejects_invalid_overrides(overrides, match):
+    with pytest.raises(ValueError, match=match):
+        PreLiveRiskProfile.from_overrides(overrides)
+
+
+def test_pre_live_risk_profile_constructor_rejects_live_broker_mode():
+    default = PreLiveRiskProfile.default()
+
+    with pytest.raises(ValueError, match="allowed_broker_modes"):
+        PreLiveRiskProfile(
+            name=default.name,
+            max_single_order_notional=default.max_single_order_notional,
+            max_gross_exposure_ratio=default.max_gross_exposure_ratio,
+            max_daily_turnover=default.max_daily_turnover,
+            max_daily_order_count=default.max_daily_order_count,
+            max_drawdown_stop_ratio=default.max_drawdown_stop_ratio,
+            stale_data_max_age_days=default.stale_data_max_age_days,
+            manual_approval_notional=default.manual_approval_notional,
+            manual_approval_sell_without_position=(
+                default.manual_approval_sell_without_position
+            ),
+            allowed_broker_modes={"live"},
+        )
+
+
 def test_safety_policy_input_defaults_to_manual_test_source_type():
     assert _policy_input().source_type == "manual_test"
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -80,6 +81,64 @@ class PreLiveRiskProfile:
     manual_approval_sell_without_position: bool
     allowed_broker_modes: set[str]
 
+    def __post_init__(self) -> None:
+        name = self.name.strip() if isinstance(self.name, str) else ""
+        if not name:
+            raise ValueError("risk profile name is required")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(
+            self,
+            "max_single_order_notional",
+            self._positive_decimal(
+                "max_single_order_notional", self.max_single_order_notional
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_gross_exposure_ratio",
+            self._positive_decimal(
+                "max_gross_exposure_ratio", self.max_gross_exposure_ratio
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_daily_turnover",
+            self._positive_decimal("max_daily_turnover", self.max_daily_turnover),
+        )
+        object.__setattr__(
+            self,
+            "max_daily_order_count",
+            self._positive_int("max_daily_order_count", self.max_daily_order_count),
+        )
+        object.__setattr__(
+            self,
+            "max_drawdown_stop_ratio",
+            self._non_negative_decimal(
+                "max_drawdown_stop_ratio", self.max_drawdown_stop_ratio
+            ),
+        )
+        object.__setattr__(
+            self,
+            "stale_data_max_age_days",
+            self._non_negative_int(
+                "stale_data_max_age_days", self.stale_data_max_age_days
+            ),
+        )
+        object.__setattr__(
+            self,
+            "manual_approval_notional",
+            self._non_negative_decimal(
+                "manual_approval_notional", self.manual_approval_notional
+            ),
+        )
+        if not isinstance(self.manual_approval_sell_without_position, bool):
+            raise ValueError("manual_approval_sell_without_position must be a boolean")
+        object.__setattr__(
+            self,
+            "allowed_broker_modes",
+            self._broker_modes(self.allowed_broker_modes),
+        )
+
     @classmethod
     def default(cls) -> PreLiveRiskProfile:
         return cls(
@@ -94,6 +153,86 @@ class PreLiveRiskProfile:
             manual_approval_sell_without_position=True,
             allowed_broker_modes={"simulated", "dry_run"},
         )
+
+    @classmethod
+    def from_overrides(cls, overrides: dict[str, Any] | None) -> PreLiveRiskProfile:
+        profile = cls.default()
+        if overrides is None:
+            return profile
+        if not isinstance(overrides, dict):
+            raise ValueError("risk profile overrides must be an object")
+        if not overrides:
+            return profile
+        fields = {
+            "name",
+            "max_single_order_notional",
+            "max_gross_exposure_ratio",
+            "max_daily_turnover",
+            "max_daily_order_count",
+            "max_drawdown_stop_ratio",
+            "stale_data_max_age_days",
+            "manual_approval_notional",
+            "manual_approval_sell_without_position",
+            "allowed_broker_modes",
+        }
+        unknown = set(overrides) - fields
+        if unknown:
+            raise ValueError(f"unknown risk profile field: {sorted(unknown)[0]}")
+        values = {field: getattr(profile, field) for field in fields}
+        values.update(overrides)
+        return cls(**values)
+
+    @staticmethod
+    def _positive_decimal(field: str, value: Decimal | int | float | str) -> Decimal:
+        decimal_value = PreLiveRiskProfile._decimal_field(field, value)
+        if decimal_value <= 0:
+            raise ValueError(f"{field} must be positive")
+        return decimal_value
+
+    @staticmethod
+    def _non_negative_decimal(field: str, value: Decimal | int | float | str) -> Decimal:
+        decimal_value = PreLiveRiskProfile._decimal_field(field, value)
+        if decimal_value < 0:
+            raise ValueError(f"{field} must be non-negative")
+        return decimal_value
+
+    @staticmethod
+    def _decimal_field(field: str, value: Decimal | int | float | str) -> Decimal:
+        decimal_value = _try_decimal(value)
+        if decimal_value is None:
+            raise ValueError(f"{field} must be a finite decimal")
+        return decimal_value
+
+    @staticmethod
+    def _positive_int(field: str, value: int) -> int:
+        int_value = _try_int(value)
+        if int_value is None or int_value <= 0:
+            raise ValueError(f"{field} must be a positive integer")
+        return int_value
+
+    @staticmethod
+    def _non_negative_int(field: str, value: int) -> int:
+        int_value = _try_int(value)
+        if int_value is None or int_value < 0:
+            raise ValueError(f"{field} must be a non-negative integer")
+        return int_value
+
+    @staticmethod
+    def _broker_modes(value: set[str]) -> set[str]:
+        if isinstance(value, (str, bytes)):
+            raise ValueError("allowed_broker_modes must be a non-empty collection")
+        try:
+            modes = {str(item) for item in value}
+        except TypeError as exc:
+            raise ValueError(
+                "allowed_broker_modes must be a non-empty collection"
+            ) from exc
+        allowed_pre_live_modes = {"simulated", "dry_run"}
+        if not modes or not modes <= allowed_pre_live_modes:
+            raise ValueError(
+                "allowed_broker_modes must contain only simulated or dry_run"
+            )
+        return modes
 
 
 @dataclass(frozen=True)

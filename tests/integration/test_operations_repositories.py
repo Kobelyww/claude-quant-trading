@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import json
 
@@ -223,6 +223,56 @@ def test_order_intent_repository_treats_decimal_scale_risk_payload_as_idempotent
         assert created is True
         assert same_created is False
         assert same_row.id == row.id
+
+
+def test_order_intent_repository_rejects_decimal_string_risk_payload_collision():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 0, 0)
+    payload = _order_intent_payload(
+        now,
+        client_order_id="paper-decimal-string-risk-summary",
+        risk_summary_payload={"value": Decimal("10.0")},
+    )
+
+    with session_scope(engine) as session:
+        repo = ExecutionOrderIntentRepository(session)
+        repo.get_or_create(**payload)
+
+        with pytest.raises(
+            ValueError,
+            match="^client_order_id already exists with different payload$",
+        ):
+            repo.get_or_create(
+                **{
+                    **payload,
+                    "risk_summary_payload": {"value": "10"},
+                }
+            )
+
+
+def test_order_intent_repository_rejects_date_string_risk_payload_collision():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 0, 0)
+    payload = _order_intent_payload(
+        now,
+        client_order_id="paper-date-string-risk-summary",
+        risk_summary_payload={"as_of": date(2026, 6, 26)},
+    )
+
+    with session_scope(engine) as session:
+        repo = ExecutionOrderIntentRepository(session)
+        repo.get_or_create(**payload)
+
+        with pytest.raises(
+            ValueError,
+            match="^client_order_id already exists with different payload$",
+        ):
+            repo.get_or_create(
+                **{
+                    **payload,
+                    "risk_summary_payload": {"as_of": "2026-06-26"},
+                }
+            )
 
 
 def test_order_intent_status_caps_blocked_reason():

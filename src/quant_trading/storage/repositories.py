@@ -74,8 +74,61 @@ def _json_dumps_canonical(value: dict) -> str:
     )
 
 
+_CANONICAL_TYPE_KEY = "__quant_trading_type__"
+
+
+def _canonical_digest_value(value):
+    if isinstance(value, Decimal):
+        return {
+            _CANONICAL_TYPE_KEY: "decimal",
+            "value": _canonical_decimal(value),
+        }
+    if isinstance(value, datetime):
+        return {
+            _CANONICAL_TYPE_KEY: "datetime",
+            "value": value.isoformat(),
+        }
+    if isinstance(value, date):
+        return {
+            _CANONICAL_TYPE_KEY: "date",
+            "value": value.isoformat(),
+        }
+    if isinstance(value, dict):
+        items = [
+            [
+                _canonical_digest_value(key),
+                _canonical_digest_value(item),
+            ]
+            for key, item in value.items()
+        ]
+        items.sort(key=lambda item: _json_dumps_canonical({"key": item[0]}))
+        return {
+            _CANONICAL_TYPE_KEY: "dict",
+            "items": items,
+        }
+    if isinstance(value, list):
+        return {
+            _CANONICAL_TYPE_KEY: "list",
+            "items": [_canonical_digest_value(item) for item in value],
+        }
+    if isinstance(value, tuple):
+        return {
+            _CANONICAL_TYPE_KEY: "tuple",
+            "items": [_canonical_digest_value(item) for item in value],
+        }
+    if hasattr(value, "value"):
+        return {
+            _CANONICAL_TYPE_KEY: "value_object",
+            "value": _canonical_digest_value(value.value),
+        }
+    return value
+
+
 def _ops_payload_digest(value: dict) -> str:
-    return hashlib.sha256(_json_dumps_canonical(value).encode("utf-8")).hexdigest()
+    canonical_value = _canonical_digest_value(value)
+    return hashlib.sha256(
+        _json_dumps_canonical(canonical_value).encode("utf-8")
+    ).hexdigest()
 
 
 def _cap_text(value: str, limit: int) -> str:

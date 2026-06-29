@@ -91,6 +91,19 @@ http://localhost:8000/data-quality-reports
 http://localhost:8000/data-quality-reports/{report_id}
 http://localhost:8000/research-validation-reports
 http://localhost:8000/research-validation-reports/{report_id}
+http://localhost:8000/ops/readiness
+http://localhost:8000/ops/safety-state
+http://localhost:8000/ops/kill-switch/enable
+http://localhost:8000/ops/kill-switch/disable
+http://localhost:8000/ops/kill-switch-events
+http://localhost:8000/ops/order-intents
+http://localhost:8000/ops/order-intents/{order_intent_id}
+http://localhost:8000/ops/order-intents/{order_intent_id}/approve
+http://localhost:8000/ops/order-intents/{order_intent_id}/reject
+http://localhost:8000/ops/approval-requests
+http://localhost:8000/ops/incidents
+http://localhost:8000/ops/incidents/{incident_id}/acknowledge
+http://localhost:8000/ops/incidents/{incident_id}/resolve
 http://localhost:8000/workflows/import-legacy
 http://localhost:8000/workflows/backtests/ma-cross
 http://localhost:8000/workflows/paper/accounts
@@ -523,6 +536,56 @@ run_ma_cross_backtest_task(
   the fill.
 - Accounting errors such as insufficient cash are surfaced instead of silently producing invalid
   equity.
+
+## Pre-Live Safety And Operations
+
+The operations safety workflow is pre-live by default. Paper order intents are persisted, evaluated
+against deterministic safety policy, and either blocked, accepted for simulated/dry-run handling, or
+held for operator approval. Operator approval only changes the local order-intent and approval
+request records; it does not submit orders to a broker or exchange.
+
+Default local posture:
+
+- `QUANT_TRADING_ENABLED=false`
+- `QUANT_BROKER_MODE=simulated`
+- global kill switch inactive
+- simulated and dry-run safety gates enabled
+- live execution unavailable
+- `safe_for_live=false`
+
+Check readiness:
+
+```bash
+curl http://127.0.0.1:8000/ops/readiness
+```
+
+Enable the kill switch:
+
+```bash
+curl -X POST http://127.0.0.1:8000/ops/kill-switch/enable \
+  -H "Content-Type: application/json" \
+  -d '{"operator":"risk lead","reason":"pause pre-live checks"}'
+```
+
+Disable the kill switch:
+
+```bash
+curl -X POST http://127.0.0.1:8000/ops/kill-switch/disable \
+  -H "Content-Type: application/json" \
+  -d '{"operator":"risk lead","reason":"checks cleared"}'
+```
+
+Inspect the audit trail:
+
+```bash
+curl http://127.0.0.1:8000/ops/order-intents
+curl http://127.0.0.1:8000/ops/approval-requests
+curl http://127.0.0.1:8000/ops/incidents
+curl http://127.0.0.1:8000/ops/kill-switch-events
+```
+
+This repository still has no real broker integration, live order placement, broker credentials,
+live market/account polling, broker webhooks, or generated strategy execution.
 
 ## Broker Adapter Safety Boundary
 

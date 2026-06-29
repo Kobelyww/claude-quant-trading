@@ -1,3 +1,5 @@
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -5,7 +7,14 @@ from sqlalchemy import select
 
 from quant_trading.api.main import create_app
 from quant_trading.storage.db import create_all, make_engine, session_scope
-from quant_trading.storage.models import PaperAccountORM, PaperRunORM
+from quant_trading.storage.models import (
+    ExecutionOrderDecisionORM,
+    ExecutionOrderIntentORM,
+    OperatorApprovalRequestORM,
+    PaperAccountORM,
+    PaperRunORM,
+    SafetyIncidentORM,
+)
 
 
 def make_client():
@@ -27,8 +36,102 @@ def test_dashboard_renders_workflow_forms_and_empty_state():
     assert 'action="/dashboard/actions/paper/accounts"' in html
     assert 'action="/dashboard/actions/paper/runs/ma-cross"' in html
     assert 'action="/dashboard/actions/paper/tick"' in html
+    assert "Operations Safety" in html
+    assert "inactive" in html
+    assert "Safe For Live false" in html
     assert "Backtest Runs" in html
     assert "Paper Accounts" in html
+
+
+def test_dashboard_displays_operations_safety_posture():
+    client, engine = make_client()
+    now = datetime(2026, 6, 26, 9, 30, 0)
+
+    client.post(
+        "/ops/kill-switch/enable",
+        json={"operator": "risk lead", "reason": "halt for incident review"},
+    )
+    with session_scope(engine) as session:
+        intent = ExecutionOrderIntentORM(
+            source_type="paper_run",
+            source_id=7,
+            paper_run_id=None,
+            paper_order_id=None,
+            client_order_id="dashboard-order-1",
+            symbol="000001",
+            instrument_id=1,
+            side="buy",
+            order_type="market",
+            quantity=100,
+            estimated_price=Decimal("10"),
+            estimated_notional=Decimal("1000"),
+            broker_mode="simulated",
+            status="approval_required",
+            risk_profile_name="default",
+            risk_summary_payload="{}",
+            approval_required=True,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(intent)
+        session.flush()
+        approval = OperatorApprovalRequestORM(
+            resource_type="execution_order_intent",
+            resource_id=intent.id,
+            status="pending",
+            reason_code="manual_approval_required_notional",
+            requested_by="policy",
+            requested_at=now,
+        )
+        session.add(approval)
+        session.flush()
+        intent.approval_request_id = approval.id
+        session.add(
+            ExecutionOrderDecisionORM(
+                order_intent_id=intent.id,
+                decision_type="approval_required",
+                reason_code="manual_approval_required_notional",
+                message="operator approval required before simulated submission",
+                policy_payload="{}",
+                created_at=now,
+            )
+        )
+        session.add(
+            SafetyIncidentORM(
+                severity="critical",
+                category="execution_safety",
+                status="open",
+                resource_type="execution_order_intent",
+                resource_id=intent.id,
+                reason_code="provider_stale",
+                message="provider data stale during dashboard review",
+                payload="{}",
+                created_at=now,
+            )
+        )
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "Operations Safety" in html
+    assert "Kill Switch" in html
+    assert "active" in html
+    assert "Safe For Simulated" in html
+    assert "Safe For Dry Run" in html
+    assert "Safe For Live" in html
+    assert "false" in html
+    assert "Pending Approvals" in html
+    assert "Open Incidents" in html
+    assert "halt for incident review" in html
+    assert "provider data stale during dashboard review" in html
+    assert "Recent Safety Decisions" in html
+    assert "Recent Order Intents" in html
+    assert "Recent Approval Requests" in html
+    assert "Recent Safety Incidents" in html
+    assert "Recent Kill Switch Events" in html
+    assert "manual_approval_required_notional" in html
+    assert "dashboard-order-1" in html
 
 
 def test_dashboard_displays_seeded_workflow_state(legacy_sqlite_db: Path):

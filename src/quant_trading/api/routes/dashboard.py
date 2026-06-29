@@ -1,6 +1,8 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal
 from html import escape
+import json
 from typing import Any, TypeVar
 from urllib.parse import quote
 
@@ -14,11 +16,15 @@ from quant_trading.storage.models import (
     BacktestRunORM,
     CashLedgerORM,
     DataSyncRunORM,
+    ExecutionOrderDecisionORM,
+    ExecutionOrderIntentORM,
     InstrumentORM,
     JobEventORM,
     JobRunORM,
     JobScheduleORM,
+    KillSwitchEventORM,
     MarketBarORM,
+    OperatorApprovalRequestORM,
     PaperAccountORM,
     PaperFillORM,
     PaperOrderORM,
@@ -26,6 +32,7 @@ from quant_trading.storage.models import (
     PaperRunORM,
     PortfolioSnapshotORM,
     RiskDecisionORM,
+    SafetyIncidentORM,
     WorkflowRunORM,
 )
 from quant_trading.storage.repositories import (
@@ -42,6 +49,7 @@ from quant_trading.workflows.operations import (
     run_paper_tick,
     start_ma_cross_paper_run,
 )
+from quant_trading.operations.readiness import build_operations_readiness
 from quant_trading.workflows.runner import WorkflowCommandRunner
 
 router = APIRouter(tags=["dashboard"])
@@ -209,6 +217,16 @@ def _collect_state(request: Request) -> dict[str, Any]:
             "db_label": engine.url.render_as_string(hide_password=True),
             "app_env": settings.app_env,
             "auth_enabled": settings.require_auth,
+            "operations_readiness": build_operations_readiness(
+                session,
+                settings,
+                _now(),
+            ),
+            "execution_order_decisions": _latest(session, ExecutionOrderDecisionORM),
+            "execution_order_intents": _latest(session, ExecutionOrderIntentORM),
+            "approval_requests": _latest(session, OperatorApprovalRequestORM),
+            "safety_incidents": _latest(session, SafetyIncidentORM),
+            "kill_switch_events": _latest(session, KillSwitchEventORM),
             "instrument_count": session.scalar(select(func.count(InstrumentORM.id))) or 0,
             "latest_bar": session.scalar(select(func.max(MarketBarORM.timestamp))),
             "workflow_runs": WorkflowRunRepository(session).list_recent(limit=20),
@@ -293,6 +311,7 @@ def _render_dashboard(
     <div class="metric"><span>Instruments</span>{_e(state["instrument_count"])}</div>
     <div class="metric"><span>Latest Imported Bar</span>{_e(state["latest_bar"] or "none")}</div>
   </section>
+  {_operations_safety_section(state)}
   <section class="forms" aria-label="Dashboard actions">
     {_render_forms(state)}
   </section>
@@ -314,6 +333,116 @@ def _render_dashboard(
 </main>
 </body>
 </html>"""
+
+
+def _operations_safety_section(state: dict[str, Any]) -> str:
+    readiness = state["operations_readiness"]
+    kill_switch = "active" if readiness["global_kill_switch_active"] else "inactive"
+    open_incidents = (
+        readiness["open_critical_incidents"] + readiness["open_warning_incidents"]
+    )
+    safety_state = readiness.get("safety_state") or {}
+    decisions = _table(
+        "Recent Safety Decisions",
+        ["ID", "Intent", "Decision", "Reason", "Message", "Created"],
+        state["execution_order_decisions"],
+        lambda r: [
+            f"#{r.id}",
+            f"#{r.order_intent_id}",
+            r.decision_type,
+            r.reason_code,
+            r.message,
+            r.created_at,
+        ],
+    )
+    intents = _table(
+        "Recent Order Intents",
+        ["ID", "Client Order", "Symbol", "Side", "Qty", "Mode", "Status", "Approval", "Blocked"],
+        state["execution_order_intents"],
+        lambda r: [
+            f"#{r.id}",
+            r.client_order_id,
+            r.symbol,
+            r.side,
+            r.quantity,
+            r.broker_mode,
+            r.status,
+            f"#{r.approval_request_id}" if r.approval_request_id else "",
+            r.blocked_reason_code or "",
+        ],
+    )
+    approvals = _table(
+        "Recent Approval Requests",
+        ["ID", "Resource", "Status", "Reason", "Requested By", "Requested", "Decided By"],
+        state["approval_requests"],
+        lambda r: [
+            f"#{r.id}",
+            f"{r.resource_type} #{r.resource_id}",
+            r.status,
+            r.reason_code,
+            r.requested_by,
+            r.requested_at,
+            r.decided_by or "",
+        ],
+    )
+    incidents = _table(
+        "Recent Safety Incidents",
+        ["ID", "Severity", "Category", "Status", "Reason", "Message", "Created"],
+        state["safety_incidents"],
+        lambda r: [
+            f"#{r.id}",
+            r.severity,
+            r.category,
+            r.status,
+            r.reason_code,
+            r.message,
+            r.created_at,
+        ],
+    )
+    kill_switch_events = _table(
+        "Recent Kill Switch Events",
+        ["ID", "Scope", "State", "Operator", "Reason", "Created"],
+        state["kill_switch_events"],
+        lambda r: [
+            f"#{r.id}",
+            r.scope,
+            _kill_switch_event_state(r),
+            r.operator,
+            r.reason,
+            r.created_at,
+        ],
+    )
+    return f"""
+  <section aria-label="Operations Safety">
+    <h2>Operations Safety</h2>
+    <div class="meta">
+      {_metric("Kill Switch", kill_switch)}
+      {_metric("Safe For Simulated", _bool_text(readiness["safe_for_simulated_paper"]))}
+      {_metric("Safe For Dry Run", _bool_text(readiness["safe_for_dry_run"]))}
+      {_metric("Safe For Live", _bool_text(readiness["safe_for_live"]))}
+      {_metric("Pending Approvals", readiness["pending_approval_requests"])}
+      {_metric("Open Incidents", open_incidents)}
+      {_metric("Safety Reason", safety_state.get("reason") or "")}
+      {_metric("Readiness Reasons", ", ".join(readiness["reasons"]))}
+    </div>
+    {decisions}
+    {intents}
+    {approvals}
+    {incidents}
+    {kill_switch_events}
+  </section>
+  """
+
+
+def _metric(label: str, value: Any) -> str:
+    return (
+        f'<div class="metric" aria-label="{_e(label)} {_e(value)}">'
+        f"<span>{_e(label)}</span>{_e(value)}</div>"
+    )
+
+
+def _bool_text(value: Any) -> str:
+    return "true" if value else "false"
 
 
 def _render_forms(state: dict[str, Any]) -> str:
@@ -600,6 +729,30 @@ def _object_ref(row: WorkflowRunORM | JobRunORM) -> str:
     if not row.created_object_type or row.created_object_id is None:
         return ""
     return f"{row.created_object_type} #{row.created_object_id}"
+
+
+def _kill_switch_event_state(row: KillSwitchEventORM) -> str:
+    payload = _json_loads(row.new_state_payload)
+    active = payload.get("kill_switch_active")
+    if active is True:
+        return "active"
+    if active is False:
+        return "inactive"
+    return ""
+
+
+def _json_loads(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        loaded = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _e(value: Any) -> str:

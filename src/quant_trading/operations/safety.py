@@ -1,0 +1,626 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy.orm import Session
+
+from quant_trading.core.enums import OrderSide, OrderType
+from quant_trading.core.models import Bar
+from quant_trading.storage.models import (
+    ExecutionOrderIntentORM,
+    ExecutionSafetyStateORM,
+    OperatorApprovalRequestORM,
+)
+from quant_trading.storage.repositories import (
+    ExecutionOrderDecisionRepository,
+    ExecutionOrderIntentRepository,
+    ExecutionSafetyStateRepository,
+    OperatorApprovalRequestRepository,
+)
+
+
+def _decimal(value: Decimal | int | float | str | None) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def _enum_value(value) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _date_only(value: date | datetime | str) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(value)
+
+
+@dataclass(frozen=True)
+class PreLiveRiskProfile:
+    name: str
+    max_single_order_notional: Decimal
+    max_gross_exposure_ratio: Decimal
+    max_daily_turnover: Decimal
+    max_daily_order_count: int
+    max_drawdown_stop_ratio: Decimal
+    stale_data_max_age_days: int
+    manual_approval_notional: Decimal
+    manual_approval_sell_without_position: bool
+    allowed_broker_modes: set[str]
+
+    @classmethod
+    def default(cls) -> PreLiveRiskProfile:
+        return cls(
+            name="pre_live_default",
+            max_single_order_notional=Decimal("100000"),
+            max_gross_exposure_ratio=Decimal("1.0"),
+            max_daily_turnover=Decimal("300000"),
+            max_daily_order_count=20,
+            max_drawdown_stop_ratio=Decimal("0.10"),
+            stale_data_max_age_days=10,
+            manual_approval_notional=Decimal("50000"),
+            manual_approval_sell_without_position=True,
+            allowed_broker_modes={"simulated", "dry_run"},
+        )
+
+
+@dataclass(frozen=True)
+class SafetyPolicyInput:
+    client_order_id: str
+    symbol: str
+    instrument_id: int
+    side: OrderSide | str
+    order_type: OrderType | str
+    quantity: int
+    limit_price: Decimal | None
+    estimated_price: Decimal | None
+    broker_mode: str
+    latest_bar: Bar | None
+    as_of: date | datetime
+    cash: Decimal = Decimal("0")
+    market_value: Decimal = Decimal("0")
+    peak_equity: Decimal | None = None
+    daily_turnover: Decimal = Decimal("0")
+    daily_order_count: int = 0
+    position_quantity: int = 0
+    source_type: str = "manual"
+    source_id: int | None = None
+    paper_run_id: int | None = None
+    paper_order_id: int | None = None
+    kill_switch_active: bool = False
+    dry_run_enabled: bool = True
+    simulated_enabled: bool = True
+    live_enabled: bool = False
+
+    @property
+    def side_value(self) -> str:
+        return _enum_value(self.side)
+
+    @property
+    def order_type_value(self) -> str:
+        return _enum_value(self.order_type)
+
+    @property
+    def as_of_date(self) -> date:
+        return _date_only(self.as_of)
+
+    @property
+    def order_notional(self) -> Decimal:
+        return _decimal(self.estimated_price) * Decimal(self.quantity)
+
+
+@dataclass(frozen=True)
+class PreLiveSafetyDecision:
+    decision: str
+    reason_code: str
+    message: str
+    broker_submission_allowed: bool
+    order_status: str | None = None
+    order_intent_id: int | None = None
+    approval_request_id: int | None = None
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    decision: str
+    reason_code: str
+    message: str
+    broker_submission_allowed: bool
+
+
+class ExecutionOrderStateMachine:
+    _ALLOWED_TRANSITIONS = {
+        "created": frozenset(
+            {"risk_approved", "approval_required", "blocked", "cancelled"}
+        ),
+        "approval_required": frozenset({"operator_approved", "blocked", "cancelled"}),
+        "risk_approved": frozenset({"submitted", "skipped", "cancelled"}),
+        "operator_approved": frozenset({"submitted", "skipped"}),
+    }
+
+    @classmethod
+    def validate(cls, current_status: str, next_status: str) -> None:
+        if next_status not in cls._ALLOWED_TRANSITIONS.get(current_status, frozenset()):
+            raise ValueError(
+                "invalid execution order transition "
+                f"from {current_status} to {next_status}"
+            )
+
+
+class PreLiveSafetyService:
+    def __init__(
+        self,
+        session: Session | None = None,
+        profile: PreLiveRiskProfile | None = None,
+    ):
+        self.session = session
+        self.profile = profile or PreLiveRiskProfile.default()
+
+    def evaluate_policy(self, policy_input: SafetyPolicyInput) -> PreLiveSafetyDecision:
+        decision = self._evaluate_policy(policy_input)
+        return PreLiveSafetyDecision(
+            decision=decision.decision,
+            reason_code=decision.reason_code,
+            message=decision.message,
+            broker_submission_allowed=decision.broker_submission_allowed,
+        )
+
+    def evaluate_order_intent(
+        self,
+        policy_input: SafetyPolicyInput,
+        *,
+        now: datetime | None = None,
+    ) -> PreLiveSafetyDecision:
+        session = self._require_session()
+        now = now or datetime.utcnow()
+        intent_repo = ExecutionOrderIntentRepository(session)
+        existing_intent = intent_repo.get_by_client_order_id(policy_input.client_order_id)
+        if existing_intent is not None and existing_intent.status != "created":
+            return self._skipped_existing_intent(existing_intent)
+
+        safety_state = ExecutionSafetyStateRepository(session).get_or_create_global(now)
+        merged_input = self._with_safety_state(policy_input, safety_state)
+        policy_decision = self._evaluate_policy(merged_input)
+        intent, created = intent_repo.get_or_create(
+            source_type=merged_input.source_type,
+            source_id=merged_input.source_id,
+            paper_run_id=merged_input.paper_run_id,
+            paper_order_id=merged_input.paper_order_id,
+            client_order_id=merged_input.client_order_id,
+            symbol=merged_input.symbol,
+            instrument_id=merged_input.instrument_id,
+            side=merged_input.side_value,
+            order_type=merged_input.order_type_value,
+            quantity=merged_input.quantity,
+            limit_price=merged_input.limit_price,
+            estimated_price=merged_input.estimated_price,
+            estimated_notional=merged_input.order_notional,
+            broker_mode=merged_input.broker_mode,
+            risk_profile_name=self.profile.name,
+            risk_summary_payload=self._policy_payload(merged_input, policy_decision),
+            approval_required=policy_decision.decision == "approval_required",
+            created_at=now,
+            updated_at=now,
+        )
+        if not created and intent.status != "created":
+            return self._skipped_existing_intent(intent)
+
+        if policy_decision.decision == "approved":
+            return self._persist_policy_result(
+                intent=intent,
+                order_status="risk_approved",
+                policy_decision=policy_decision,
+                policy_input=merged_input,
+                now=now,
+            )
+        if policy_decision.decision == "blocked":
+            return self._persist_policy_result(
+                intent=intent,
+                order_status="blocked",
+                policy_decision=policy_decision,
+                policy_input=merged_input,
+                now=now,
+            )
+        approval = OperatorApprovalRequestRepository(session).create_pending(
+            resource_type="execution_order_intent",
+            resource_id=intent.id,
+            reason_code=policy_decision.reason_code,
+            requested_by="system",
+            requested_at=now,
+            expires_at=None,
+        )
+        return self._persist_policy_result(
+            intent=intent,
+            order_status="approval_required",
+            policy_decision=policy_decision,
+            policy_input=merged_input,
+            now=now,
+            approval_request=approval,
+        )
+
+    def approve_order_intent(
+        self,
+        approval_request_id: int,
+        *,
+        operator: str,
+        note: str = "",
+        now: datetime | None = None,
+    ) -> PreLiveSafetyDecision:
+        session = self._require_session()
+        now = now or datetime.utcnow()
+        approval_repo = OperatorApprovalRequestRepository(session)
+        approval = self._get_approval(approval_repo, approval_request_id)
+        intent = self._get_approval_intent(approval)
+        ExecutionOrderStateMachine.validate(intent.status, "operator_approved")
+        approval_repo.decide(
+            approval,
+            status="approved",
+            operator=operator,
+            note=note,
+            decided_at=now,
+        )
+        policy_decision = PolicyDecision(
+            decision="approved",
+            reason_code="approved",
+            message="operator approved order intent",
+            broker_submission_allowed=True,
+        )
+        ExecutionOrderIntentRepository(session).set_status(
+            intent,
+            "operator_approved",
+            now,
+            approval_required=False,
+        )
+        self._record_decision(intent, policy_decision, {}, now)
+        return PreLiveSafetyDecision(
+            decision=policy_decision.decision,
+            reason_code=policy_decision.reason_code,
+            message=policy_decision.message,
+            broker_submission_allowed=policy_decision.broker_submission_allowed,
+            order_status=intent.status,
+            order_intent_id=intent.id,
+            approval_request_id=approval.id,
+        )
+
+    def reject_order_intent(
+        self,
+        approval_request_id: int,
+        *,
+        operator: str,
+        note: str = "",
+        now: datetime | None = None,
+    ) -> PreLiveSafetyDecision:
+        session = self._require_session()
+        now = now or datetime.utcnow()
+        approval_repo = OperatorApprovalRequestRepository(session)
+        approval = self._get_approval(approval_repo, approval_request_id)
+        intent = self._get_approval_intent(approval)
+        ExecutionOrderStateMachine.validate(intent.status, "blocked")
+        approval_repo.decide(
+            approval,
+            status="rejected",
+            operator=operator,
+            note=note,
+            decided_at=now,
+        )
+        policy_decision = PolicyDecision(
+            decision="blocked",
+            reason_code="blocked_operator_rejected",
+            message="operator rejected order intent",
+            broker_submission_allowed=False,
+        )
+        ExecutionOrderIntentRepository(session).set_status(
+            intent,
+            "blocked",
+            now,
+            approval_required=False,
+            blocked_reason_code=policy_decision.reason_code,
+            blocked_reason=policy_decision.message,
+        )
+        self._record_decision(intent, policy_decision, {}, now)
+        return PreLiveSafetyDecision(
+            decision=policy_decision.decision,
+            reason_code=policy_decision.reason_code,
+            message=policy_decision.message,
+            broker_submission_allowed=policy_decision.broker_submission_allowed,
+            order_status=intent.status,
+            order_intent_id=intent.id,
+            approval_request_id=approval.id,
+        )
+
+    def _evaluate_policy(self, policy_input: SafetyPolicyInput) -> PolicyDecision:
+        if policy_input.broker_mode == "live":
+            return self._blocked(
+                "blocked_live_mode_unavailable",
+                "live broker mode is unavailable for pre-live safety",
+            )
+        if policy_input.kill_switch_active:
+            return self._blocked(
+                "blocked_global_kill_switch",
+                "global execution kill switch is active",
+            )
+        if not self._broker_mode_enabled(policy_input):
+            return self._blocked(
+                "blocked_broker_mode_disabled",
+                "broker mode is not enabled by execution safety state",
+            )
+        if self._is_stale_market_data(policy_input):
+            return self._blocked(
+                "blocked_stale_market_data",
+                "latest market data is missing or stale",
+            )
+        if _decimal(policy_input.estimated_price) <= 0 or (
+            policy_input.latest_bar is not None and _decimal(policy_input.latest_bar.close) <= 0
+        ):
+            return self._blocked("blocked_invalid_price", "latest price is invalid")
+        notional = policy_input.order_notional
+        if notional > self.profile.max_single_order_notional:
+            return self._blocked(
+                "blocked_max_single_order_notional",
+                "single order notional exceeds policy maximum",
+            )
+        if (
+            _decimal(policy_input.daily_turnover) + notional
+            > self.profile.max_daily_turnover
+        ):
+            return self._blocked(
+                "blocked_max_daily_turnover",
+                "daily turnover exceeds policy maximum",
+            )
+        if policy_input.daily_order_count >= self.profile.max_daily_order_count:
+            return self._blocked(
+                "blocked_max_daily_order_count",
+                "daily order count reached policy maximum",
+            )
+        if self._exposure_ratio(policy_input) > self.profile.max_gross_exposure_ratio:
+            return self._blocked(
+                "blocked_max_gross_exposure",
+                "gross exposure exceeds policy maximum",
+            )
+        if self._drawdown(policy_input) > self.profile.max_drawdown_stop_ratio:
+            return self._blocked(
+                "blocked_drawdown_stop",
+                "portfolio drawdown exceeds pre-live stop threshold",
+            )
+        if (
+            self.profile.manual_approval_sell_without_position
+            and policy_input.side_value == "sell"
+            and policy_input.position_quantity < policy_input.quantity
+        ):
+            return self._approval_required(
+                "manual_approval_required_sell_without_position",
+                "sell order exceeds current position and requires operator approval",
+            )
+        if notional > self.profile.manual_approval_notional:
+            return self._approval_required(
+                "manual_approval_required_notional",
+                "order notional exceeds manual approval threshold",
+            )
+        return PolicyDecision(
+            decision="approved",
+            reason_code="approved",
+            message="order intent approved by pre-live safety policy",
+            broker_submission_allowed=True,
+        )
+
+    def _persist_policy_result(
+        self,
+        *,
+        intent: ExecutionOrderIntentORM,
+        order_status: str,
+        policy_decision: PolicyDecision,
+        policy_input: SafetyPolicyInput,
+        now: datetime,
+        approval_request: OperatorApprovalRequestORM | None = None,
+    ) -> PreLiveSafetyDecision:
+        session = self._require_session()
+        ExecutionOrderStateMachine.validate(intent.status, order_status)
+        ExecutionOrderIntentRepository(session).set_status(
+            intent,
+            order_status,
+            now,
+            approval_required=policy_decision.decision == "approval_required",
+            approval_request_id=approval_request.id if approval_request else None,
+            blocked_reason_code=(
+                policy_decision.reason_code
+                if policy_decision.decision == "blocked"
+                else None
+            ),
+            blocked_reason=(
+                policy_decision.message if policy_decision.decision == "blocked" else None
+            ),
+        )
+        self._record_decision(
+            intent,
+            policy_decision,
+            self._policy_payload(policy_input, policy_decision),
+            now,
+        )
+        return PreLiveSafetyDecision(
+            decision=policy_decision.decision,
+            reason_code=policy_decision.reason_code,
+            message=policy_decision.message,
+            broker_submission_allowed=policy_decision.broker_submission_allowed,
+            order_status=intent.status,
+            order_intent_id=intent.id,
+            approval_request_id=approval_request.id if approval_request else None,
+        )
+
+    def _record_decision(
+        self,
+        intent: ExecutionOrderIntentORM,
+        policy_decision: PolicyDecision,
+        policy_payload: dict,
+        now: datetime,
+    ) -> None:
+        ExecutionOrderDecisionRepository(self._require_session()).record(
+            order_intent_id=intent.id,
+            decision_type=policy_decision.decision,
+            reason_code=policy_decision.reason_code,
+            message=policy_decision.message,
+            policy_payload=policy_payload,
+            created_at=now,
+        )
+
+    def _skipped_existing_intent(
+        self,
+        intent: ExecutionOrderIntentORM,
+    ) -> PreLiveSafetyDecision:
+        return PreLiveSafetyDecision(
+            decision="skipped",
+            reason_code="skipped_order_already_evaluated",
+            message="order intent was already evaluated",
+            broker_submission_allowed=False,
+            order_status=intent.status,
+            order_intent_id=intent.id,
+            approval_request_id=intent.approval_request_id,
+        )
+
+    def _policy_payload(
+        self,
+        policy_input: SafetyPolicyInput,
+        policy_decision: PolicyDecision,
+    ) -> dict:
+        return {
+            "profile_name": self.profile.name,
+            "client_order_id": policy_input.client_order_id,
+            "symbol": policy_input.symbol,
+            "instrument_id": policy_input.instrument_id,
+            "side": policy_input.side_value,
+            "order_type": policy_input.order_type_value,
+            "quantity": policy_input.quantity,
+            "estimated_price": policy_input.estimated_price,
+            "estimated_notional": policy_input.order_notional,
+            "broker_mode": policy_input.broker_mode,
+            "latest_bar_timestamp": (
+                policy_input.latest_bar.timestamp if policy_input.latest_bar else None
+            ),
+            "as_of": policy_input.as_of,
+            "cash": policy_input.cash,
+            "market_value": policy_input.market_value,
+            "peak_equity": policy_input.peak_equity,
+            "daily_turnover": policy_input.daily_turnover,
+            "daily_order_count": policy_input.daily_order_count,
+            "position_quantity": policy_input.position_quantity,
+            "kill_switch_active": policy_input.kill_switch_active,
+            "dry_run_enabled": policy_input.dry_run_enabled,
+            "simulated_enabled": policy_input.simulated_enabled,
+            "live_enabled": policy_input.live_enabled,
+            "decision": policy_decision.decision,
+            "reason_code": policy_decision.reason_code,
+            "broker_submission_allowed": policy_decision.broker_submission_allowed,
+        }
+
+    def _with_safety_state(
+        self,
+        policy_input: SafetyPolicyInput,
+        safety_state: ExecutionSafetyStateORM,
+    ) -> SafetyPolicyInput:
+        return SafetyPolicyInput(
+            client_order_id=policy_input.client_order_id,
+            symbol=policy_input.symbol,
+            instrument_id=policy_input.instrument_id,
+            side=policy_input.side,
+            order_type=policy_input.order_type,
+            quantity=policy_input.quantity,
+            limit_price=policy_input.limit_price,
+            estimated_price=policy_input.estimated_price,
+            broker_mode=policy_input.broker_mode,
+            latest_bar=policy_input.latest_bar,
+            as_of=policy_input.as_of,
+            cash=policy_input.cash,
+            market_value=policy_input.market_value,
+            peak_equity=policy_input.peak_equity,
+            daily_turnover=policy_input.daily_turnover,
+            daily_order_count=policy_input.daily_order_count,
+            position_quantity=policy_input.position_quantity,
+            source_type=policy_input.source_type,
+            source_id=policy_input.source_id,
+            paper_run_id=policy_input.paper_run_id,
+            paper_order_id=policy_input.paper_order_id,
+            kill_switch_active=safety_state.kill_switch_active,
+            dry_run_enabled=safety_state.dry_run_enabled,
+            simulated_enabled=safety_state.simulated_enabled,
+            live_enabled=safety_state.live_enabled,
+        )
+
+    def _broker_mode_enabled(self, policy_input: SafetyPolicyInput) -> bool:
+        if policy_input.broker_mode not in self.profile.allowed_broker_modes:
+            return False
+        if policy_input.broker_mode == "simulated":
+            return policy_input.simulated_enabled
+        if policy_input.broker_mode == "dry_run":
+            return policy_input.dry_run_enabled
+        return False
+
+    def _is_stale_market_data(self, policy_input: SafetyPolicyInput) -> bool:
+        if policy_input.latest_bar is None:
+            return True
+        latest_date = _date_only(policy_input.latest_bar.timestamp)
+        return (
+            policy_input.as_of_date - latest_date
+        ).days > self.profile.stale_data_max_age_days
+
+    def _drawdown(self, policy_input: SafetyPolicyInput) -> Decimal:
+        equity = self._equity(policy_input)
+        peak_equity = _decimal(policy_input.peak_equity) if policy_input.peak_equity else equity
+        if peak_equity <= 0:
+            return Decimal("0")
+        return (peak_equity - equity) / peak_equity
+
+    def _exposure_ratio(self, policy_input: SafetyPolicyInput) -> Decimal:
+        equity = self._equity(policy_input)
+        if equity <= 0:
+            return Decimal("Infinity")
+        return abs(_decimal(policy_input.market_value)) / equity
+
+    def _equity(self, policy_input: SafetyPolicyInput) -> Decimal:
+        return _decimal(policy_input.cash) + _decimal(policy_input.market_value)
+
+    def _get_approval(
+        self,
+        approval_repo: OperatorApprovalRequestRepository,
+        approval_request_id: int,
+    ) -> OperatorApprovalRequestORM:
+        approval = approval_repo.get(approval_request_id)
+        if approval is None:
+            raise ValueError(f"approval request not found: {approval_request_id}")
+        return approval
+
+    def _get_approval_intent(
+        self,
+        approval: OperatorApprovalRequestORM,
+    ) -> ExecutionOrderIntentORM:
+        if approval.resource_type != "execution_order_intent":
+            raise ValueError("approval request is not for an execution order intent")
+        intent = ExecutionOrderIntentRepository(self._require_session()).get(
+            approval.resource_id
+        )
+        if intent is None:
+            raise ValueError(f"execution order intent not found: {approval.resource_id}")
+        return intent
+
+    def _require_session(self) -> Session:
+        if self.session is None:
+            raise ValueError("session is required for persistence operations")
+        return self.session
+
+    def _blocked(self, reason_code: str, message: str) -> PolicyDecision:
+        return PolicyDecision(
+            decision="blocked",
+            reason_code=reason_code,
+            message=message,
+            broker_submission_allowed=False,
+        )
+
+    def _approval_required(self, reason_code: str, message: str) -> PolicyDecision:
+        return PolicyDecision(
+            decision="approval_required",
+            reason_code=reason_code,
+            message=message,
+            broker_submission_allowed=False,
+        )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,20 @@ def _date_only(value: date | datetime | str) -> date:
     if isinstance(value, date):
         return value
     return date.fromisoformat(value)
+
+
+def _try_decimal(value: Decimal | int | float | str | None) -> Decimal | None:
+    try:
+        return _decimal(value)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _try_date_only(value: date | datetime | str) -> date | None:
+    try:
+        return _date_only(value)
+    except (TypeError, ValueError):
+        return None
 
 
 _VALID_BROKER_MODES = frozenset({"simulated", "dry_run", "live"})
@@ -364,9 +378,7 @@ class PreLiveSafetyService:
                 "blocked_stale_market_data",
                 "latest market data is missing or stale",
             )
-        if _decimal(policy_input.estimated_price) <= 0 or (
-            policy_input.latest_bar is not None and _decimal(policy_input.latest_bar.close) <= 0
-        ):
+        if not self._has_valid_price(policy_input):
             return self._blocked("blocked_invalid_price", "latest price is invalid")
         notional = policy_input.order_notional
         if notional > self.profile.max_single_order_notional:
@@ -596,10 +608,11 @@ class PreLiveSafetyService:
     def _is_stale_market_data(self, policy_input: SafetyPolicyInput) -> bool:
         if policy_input.latest_bar is None:
             return True
-        latest_date = _date_only(policy_input.latest_bar.timestamp)
-        return (
-            policy_input.as_of_date - latest_date
-        ).days > self.profile.stale_data_max_age_days
+        latest_date = _try_date_only(policy_input.latest_bar.timestamp)
+        as_of_date = _try_date_only(policy_input.as_of)
+        if latest_date is None or as_of_date is None:
+            return True
+        return (as_of_date - latest_date).days > self.profile.stale_data_max_age_days
 
     def _drawdown(self, policy_input: SafetyPolicyInput) -> Decimal:
         equity = self._equity(policy_input)
@@ -629,11 +642,22 @@ class PreLiveSafetyService:
         return market_value
 
     def _is_valid_order_intent(self, policy_input: SafetyPolicyInput) -> bool:
+        if not isinstance(policy_input.quantity, int):
+            return False
         return (
             policy_input.quantity > 0
             and policy_input.side_value in _VALID_ORDER_SIDES
             and policy_input.order_type_value in _VALID_ORDER_TYPES
         )
+
+    def _has_valid_price(self, policy_input: SafetyPolicyInput) -> bool:
+        estimated_price = _try_decimal(policy_input.estimated_price)
+        if estimated_price is None or estimated_price <= 0:
+            return False
+        if policy_input.latest_bar is None:
+            return False
+        latest_close = _try_decimal(policy_input.latest_bar.close)
+        return latest_close is not None and latest_close > 0
 
     def _equity(self, policy_input: SafetyPolicyInput) -> Decimal:
         return _decimal(policy_input.cash) + _decimal(policy_input.market_value)

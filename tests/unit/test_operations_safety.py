@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +52,23 @@ def _policy_input(**overrides) -> SafetyPolicyInput:
     }
     payload.update(overrides)
     return SafetyPolicyInput(**payload)
+
+
+def _bar_with(**overrides) -> Bar:
+    bar = _policy_input().latest_bar
+    payload = {
+        "instrument_id": bar.instrument_id,
+        "symbol": bar.symbol,
+        "market": bar.market,
+        "timestamp": bar.timestamp,
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+    }
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
 
 
 def test_default_pre_live_risk_profile_matches_policy_spec():
@@ -150,6 +168,7 @@ def test_invalid_broker_mode_raises_domain_validation_error():
     [
         {"quantity": 0},
         {"quantity": -100},
+        {"quantity": "bad"},
         {"side": "hold"},
         {"order_type": "stop_loss"},
     ],
@@ -161,6 +180,42 @@ def test_malformed_order_intent_is_blocked_before_submission(overrides):
 
     assert decision.decision_type == "blocked"
     assert decision.reason_code == "blocked_invalid_order_intent"
+    assert decision.broker_submission_allowed is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"estimated_price": "bad"},
+        {"latest_bar": _bar_with(close="bad")},
+    ],
+)
+def test_malformed_price_inputs_are_blocked_without_runtime_error(overrides):
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(_policy_input(**overrides))
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_invalid_price"
+    assert decision.broker_submission_allowed is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"as_of": "not-a-date"},
+        {"latest_bar": _bar_with(timestamp="not-a-date")},
+    ],
+)
+def test_malformed_timestamp_inputs_are_blocked_as_stale_without_runtime_error(
+    overrides,
+):
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(_policy_input(**overrides))
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_stale_market_data"
     assert decision.broker_submission_allowed is False
 
 

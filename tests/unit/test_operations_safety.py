@@ -193,6 +193,18 @@ def test_invalid_broker_mode_raises_domain_validation_error():
         service.evaluate_policy(_policy_input(broker_mode="bad-mode"))
 
 
+def test_generated_strategy_source_type_is_blocked_before_submission():
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(
+        _policy_input(source_type="generated_strategy")
+    )
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_invalid_order_intent"
+    assert decision.broker_submission_allowed is False
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

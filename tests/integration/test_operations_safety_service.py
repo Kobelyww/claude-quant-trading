@@ -97,6 +97,47 @@ def test_evaluate_order_intent_persists_approved_decision_and_order_state():
         assert json.loads(decisions[0].policy_payload)["broker_submission_allowed"] is True
 
 
+def test_generated_strategy_source_type_persists_blocked_without_approval():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 30, 0)
+
+    with session_scope(engine) as session:
+        decision = PreLiveSafetyService(session).evaluate_order_intent(
+            _policy_input(
+                client_order_id="order-generated-strategy",
+                source_type="generated_strategy",
+            ),
+            now=now,
+        )
+
+        assert decision.decision_type == "blocked"
+        assert decision.reason_code == "blocked_invalid_order_intent"
+        assert decision.order_status == "blocked"
+        assert decision.broker_submission_allowed is False
+        assert decision.approval_request_id is None
+
+    with session_scope(engine) as session:
+        intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.client_order_id == "order-generated-strategy"
+            )
+        )
+        approvals = OperatorApprovalRequestRepository(session).list_recent()
+        decisions = ExecutionOrderDecisionRepository(session).list_recent()
+        policy_payload = json.loads(decisions[0].policy_payload)
+
+        assert intent.status == "blocked"
+        assert intent.source_type == "generated_strategy"
+        assert intent.blocked_reason_code == "blocked_invalid_order_intent"
+        assert intent.approval_required is False
+        assert intent.approval_request_id is None
+        assert approvals == []
+        assert len(decisions) == 1
+        assert decisions[0].decision_type == "blocked"
+        assert decisions[0].reason_code == "blocked_invalid_order_intent"
+        assert policy_payload["broker_submission_allowed"] is False
+
+
 def test_kill_switch_block_persists_without_approval_request():
     engine = make_engine_with_schema()
     now = datetime(2026, 6, 26, 9, 30, 0)

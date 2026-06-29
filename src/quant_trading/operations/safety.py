@@ -61,6 +61,7 @@ def _try_date_only(value: date | datetime | str) -> date | None:
 
 
 _VALID_BROKER_MODES = frozenset({"simulated", "dry_run", "live"})
+_VALID_SOURCE_TYPES = frozenset({"paper_run", "manual_test"})
 _VALID_ORDER_SIDES = frozenset(item.value for item in OrderSide)
 _VALID_ORDER_TYPES = frozenset(item.value for item in OrderType)
 
@@ -696,6 +697,8 @@ class PreLiveSafetyService:
         return market_value
 
     def _is_valid_order_intent(self, policy_input: SafetyPolicyInput) -> bool:
+        if policy_input.source_type not in _VALID_SOURCE_TYPES:
+            return False
         quantity = _try_int(policy_input.quantity)
         if quantity is None:
             return False

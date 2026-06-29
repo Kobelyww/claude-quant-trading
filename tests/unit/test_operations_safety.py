@@ -94,7 +94,7 @@ def test_kill_switch_blocks_before_other_non_live_gates():
     service = PreLiveSafetyService()
 
     decision = service.evaluate_policy(
-        _policy_input(kill_switch_active=True, broker_mode="disabled")
+        _policy_input(kill_switch_active=True, broker_mode="dry_run", dry_run_enabled=False)
     )
 
     assert decision.decision_type == "blocked"
@@ -138,6 +138,13 @@ def test_live_mode_is_always_blocked_even_when_enabled():
     assert decision.broker_submission_allowed is False
 
 
+def test_invalid_broker_mode_raises_domain_validation_error():
+    service = PreLiveSafetyService()
+
+    with pytest.raises(ValueError, match="invalid broker mode: bad-mode"):
+        service.evaluate_policy(_policy_input(broker_mode="bad-mode"))
+
+
 def test_simulated_order_within_limits_is_approved():
     service = PreLiveSafetyService()
 
@@ -168,6 +175,23 @@ def test_stale_datetime_latest_bar_is_compared_as_date_not_datetime():
 
     assert decision.decision_type == "blocked"
     assert decision.reason_code == "blocked_stale_market_data"
+
+
+def test_buy_order_blocks_when_post_order_exposure_exceeds_limit():
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(
+        _policy_input(
+            cash=Decimal("10000"),
+            market_value=Decimal("90000"),
+            peak_equity=Decimal("100000"),
+            quantity=1500,
+            estimated_price=Decimal("10"),
+        )
+    )
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_max_gross_exposure"
 
 
 @pytest.mark.parametrize(

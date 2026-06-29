@@ -205,6 +205,26 @@ def test_duplicate_already_evaluated_client_order_id_skips_new_decision_record()
         assert len(ExecutionOrderDecisionRepository(session).list_recent()) == 1
 
 
+def test_conflicting_duplicate_client_order_id_raises_instead_of_skipping():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 30, 0)
+
+    with session_scope(engine) as session:
+        service = PreLiveSafetyService(session)
+        service.evaluate_order_intent(_policy_input(), now=now)
+
+        with pytest.raises(
+            ValueError,
+            match="client_order_id already exists with different payload",
+        ):
+            service.evaluate_order_intent(
+                _policy_input(quantity=200),
+                now=now,
+            )
+
+        assert len(ExecutionOrderDecisionRepository(session).list_recent()) == 1
+
+
 def test_duplicate_already_evaluated_client_order_id_skips_after_safety_state_changes():
     engine = make_engine_with_schema()
     now = datetime(2026, 6, 26, 9, 30, 0)

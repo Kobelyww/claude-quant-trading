@@ -39,6 +39,9 @@ def _date_only(value: date | datetime | str) -> date:
     return date.fromisoformat(value)
 
 
+_VALID_BROKER_MODES = frozenset({"simulated", "dry_run", "live"})
+
+
 @dataclass(frozen=True)
 class PreLiveRiskProfile:
     name: str
@@ -161,6 +164,7 @@ class PreLiveSafetyService:
         self.profile = profile or PreLiveRiskProfile.default()
 
     def evaluate_policy(self, policy_input: SafetyPolicyInput) -> PreLiveSafetyDecision:
+        self._validate_broker_mode(policy_input.broker_mode)
         decision = self._evaluate_policy(policy_input)
         return PreLiveSafetyDecision(
             decision_type=decision.decision,
@@ -178,10 +182,7 @@ class PreLiveSafetyService:
         session = self._require_session()
         now = now or datetime.utcnow()
         intent_repo = ExecutionOrderIntentRepository(session)
-        existing_intent = intent_repo.get_by_client_order_id(policy_input.client_order_id)
-        if existing_intent is not None and existing_intent.status != "created":
-            return self._skipped_existing_intent(existing_intent)
-
+        self._validate_broker_mode(policy_input.broker_mode)
         safety_state = ExecutionSafetyStateRepository(session).get_or_create_global(now)
         merged_input = self._with_safety_state(policy_input, safety_state)
         policy_decision = self._evaluate_policy(merged_input)
@@ -201,7 +202,7 @@ class PreLiveSafetyService:
             estimated_notional=merged_input.order_notional,
             broker_mode=merged_input.broker_mode,
             risk_profile_name=self.profile.name,
-            risk_summary_payload=self._policy_payload(merged_input, policy_decision),
+            risk_summary_payload=self._order_intent_payload(merged_input),
             approval_required=policy_decision.decision == "approval_required",
             created_at=now,
             updated_at=now,
@@ -333,6 +334,7 @@ class PreLiveSafetyService:
         )
 
     def _evaluate_policy(self, policy_input: SafetyPolicyInput) -> PolicyDecision:
+        self._validate_broker_mode(policy_input.broker_mode)
         if policy_input.broker_mode == "live":
             return self._blocked(
                 "blocked_live_mode_unavailable",
@@ -515,6 +517,30 @@ class PreLiveSafetyService:
             "broker_submission_allowed": policy_decision.broker_submission_allowed,
         }
 
+    def _order_intent_payload(self, policy_input: SafetyPolicyInput) -> dict:
+        return {
+            "profile_name": self.profile.name,
+            "client_order_id": policy_input.client_order_id,
+            "symbol": policy_input.symbol,
+            "instrument_id": policy_input.instrument_id,
+            "side": policy_input.side_value,
+            "order_type": policy_input.order_type_value,
+            "quantity": policy_input.quantity,
+            "estimated_price": policy_input.estimated_price,
+            "estimated_notional": policy_input.order_notional,
+            "broker_mode": policy_input.broker_mode,
+            "latest_bar_timestamp": (
+                policy_input.latest_bar.timestamp if policy_input.latest_bar else None
+            ),
+            "as_of": policy_input.as_of,
+            "cash": policy_input.cash,
+            "market_value": policy_input.market_value,
+            "peak_equity": policy_input.peak_equity,
+            "daily_turnover": policy_input.daily_turnover,
+            "daily_order_count": policy_input.daily_order_count,
+            "position_quantity": policy_input.position_quantity,
+        }
+
     def _with_safety_state(
         self,
         policy_input: SafetyPolicyInput,
@@ -549,6 +575,7 @@ class PreLiveSafetyService:
         )
 
     def _broker_mode_enabled(self, policy_input: SafetyPolicyInput) -> bool:
+        self._validate_broker_mode(policy_input.broker_mode)
         if policy_input.broker_mode not in self.profile.allowed_broker_modes:
             return False
         if policy_input.broker_mode == "simulated":
@@ -576,10 +603,28 @@ class PreLiveSafetyService:
         equity = self._equity(policy_input)
         if equity <= 0:
             return Decimal("Infinity")
-        return abs(_decimal(policy_input.market_value)) / equity
+        return abs(self._post_order_market_value(policy_input)) / equity
+
+    def _post_order_market_value(self, policy_input: SafetyPolicyInput) -> Decimal:
+        market_value = _decimal(policy_input.market_value)
+        notional = policy_input.order_notional
+        if policy_input.side_value == "buy":
+            return market_value + notional
+        if policy_input.side_value == "sell":
+            existing_position_value = (
+                _decimal(policy_input.estimated_price)
+                * Decimal(max(policy_input.position_quantity, 0))
+            )
+            reduction = min(notional, existing_position_value)
+            return market_value - reduction
+        return market_value
 
     def _equity(self, policy_input: SafetyPolicyInput) -> Decimal:
         return _decimal(policy_input.cash) + _decimal(policy_input.market_value)
+
+    def _validate_broker_mode(self, broker_mode: str) -> None:
+        if broker_mode not in _VALID_BROKER_MODES:
+            raise ValueError(f"invalid broker mode: {broker_mode}")
 
     def _get_order_intent(self, order_intent_id: int) -> ExecutionOrderIntentORM:
         intent = ExecutionOrderIntentRepository(self._require_session()).get(

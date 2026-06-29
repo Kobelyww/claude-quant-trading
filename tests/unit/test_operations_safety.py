@@ -259,11 +259,44 @@ def test_malformed_daily_turnover_is_blocked_without_runtime_error():
     assert decision.broker_submission_allowed is False
 
 
+def test_missing_required_daily_turnover_is_blocked_without_defaulting_to_zero():
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(_policy_input(daily_turnover=None))
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_max_daily_turnover"
+    assert decision.broker_submission_allowed is False
+
+
 @pytest.mark.parametrize("field", ["cash", "market_value", "peak_equity"])
 def test_malformed_portfolio_scalars_are_blocked_without_runtime_error(field):
     service = PreLiveSafetyService()
 
     decision = service.evaluate_policy(_policy_input(**{field: "bad"}))
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_max_gross_exposure"
+    assert decision.broker_submission_allowed is False
+
+
+@pytest.mark.parametrize("field", ["cash", "market_value"])
+def test_missing_required_portfolio_scalars_are_blocked_without_defaulting_to_zero(
+    field,
+):
+    service = PreLiveSafetyService()
+    overrides = {field: None}
+    if field == "cash":
+        overrides.update(
+            {
+                "side": OrderSide.SELL,
+                "market_value": Decimal("100000"),
+                "peak_equity": Decimal("100000"),
+                "position_quantity": 100,
+            }
+        )
+
+    decision = service.evaluate_policy(_policy_input(**overrides))
 
     assert decision.decision_type == "blocked"
     assert decision.reason_code == "blocked_max_gross_exposure"
@@ -276,6 +309,42 @@ def test_malformed_position_quantity_is_blocked_without_runtime_error(side):
 
     decision = service.evaluate_policy(
         _policy_input(side=side, position_quantity="bad")
+    )
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_max_gross_exposure"
+    assert decision.broker_submission_allowed is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"estimated_price": None},
+        {"latest_bar": _bar_with(close=None)},
+    ],
+)
+def test_missing_required_price_inputs_are_blocked_without_defaulting_to_zero(
+    overrides,
+):
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(_policy_input(**overrides))
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_invalid_price"
+    assert decision.broker_submission_allowed is False
+
+
+def test_missing_required_position_quantity_is_blocked_without_defaulting_to_zero():
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(
+        _policy_input(
+            side=OrderSide.SELL,
+            cash=Decimal("1000000"),
+            market_value=Decimal("1000"),
+            position_quantity=None,
+        )
     )
 
     assert decision.decision_type == "blocked"

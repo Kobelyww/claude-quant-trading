@@ -137,6 +137,7 @@ def test_kill_switch_block_persists_without_approval_request():
         ({"quantity": "bad"}, "blocked_invalid_order_intent", "0"),
         ({"estimated_price": "bad"}, "blocked_invalid_price", "0"),
         ({"daily_turnover": "bad"}, "blocked_max_daily_turnover", "1000"),
+        ({"daily_turnover": None}, "blocked_max_daily_turnover", "1000"),
         ({"cash": "bad"}, "blocked_max_gross_exposure", "1000"),
     ],
 )

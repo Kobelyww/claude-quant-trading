@@ -21,9 +21,9 @@ from quant_trading.storage.repositories import (
 )
 
 
-def _decimal(value: Decimal | int | float | str | None) -> Decimal:
+def _decimal(value: Decimal | int | float | str) -> Decimal:
     if value is None:
-        return Decimal("0")
+        raise TypeError("decimal value is required")
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 

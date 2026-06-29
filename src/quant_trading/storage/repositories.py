@@ -42,6 +42,24 @@ def _json_default(value):
     raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
+def _canonical_decimal(value: Decimal) -> str:
+    if not value.is_finite():
+        return str(value)
+    text = format(value, "f")
+    if "." not in text:
+        return text
+    text = text.rstrip("0").rstrip(".")
+    if text in {"", "-0"}:
+        return "0"
+    return text
+
+
+def _json_canonical_default(value):
+    if isinstance(value, Decimal):
+        return _canonical_decimal(value)
+    return _json_default(value)
+
+
 def _json_dumps(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=_json_default)
 
@@ -52,7 +70,7 @@ def _json_dumps_canonical(value: dict) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
-        default=_json_default,
+        default=_json_canonical_default,
     )
 
 

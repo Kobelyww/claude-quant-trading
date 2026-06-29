@@ -201,6 +201,30 @@ def test_order_intent_repository_treats_reordered_risk_payload_as_idempotent():
         assert same_row.id == row.id
 
 
+def test_order_intent_repository_treats_decimal_scale_risk_payload_as_idempotent():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 6, 26, 9, 0, 0)
+    payload = _order_intent_payload(
+        now,
+        client_order_id="paper-decimal-scale-risk-summary",
+        risk_summary_payload={"checks": [{"limit": Decimal("10.000000")}]},
+    )
+
+    with session_scope(engine) as session:
+        repo = ExecutionOrderIntentRepository(session)
+        row, created = repo.get_or_create(**payload)
+        same_row, same_created = repo.get_or_create(
+            **{
+                **payload,
+                "risk_summary_payload": {"checks": [{"limit": Decimal("10.0")}]},
+            }
+        )
+
+        assert created is True
+        assert same_created is False
+        assert same_row.id == row.id
+
+
 def test_order_intent_status_caps_blocked_reason():
     engine = make_engine_with_schema()
     now = datetime(2026, 6, 26, 9, 0, 0)

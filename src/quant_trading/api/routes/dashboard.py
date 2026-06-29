@@ -417,6 +417,8 @@ def _operations_safety_section(state: dict[str, Any]) -> str:
     <h2>Operations Safety</h2>
     <div class="meta">
       {_metric("Kill Switch", kill_switch)}
+      {_metric("Broker Mode", readiness["broker_mode"])}
+      {_metric("Trading Enabled", _bool_text(readiness["trading_enabled"]))}
       {_metric("Safe For Simulated", _bool_text(readiness["safe_for_simulated_paper"]))}
       {_metric("Safe For Dry Run", _bool_text(readiness["safe_for_dry_run"]))}
       {_metric("Safe For Live", _bool_text(readiness["safe_for_live"]))}

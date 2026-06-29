@@ -38,6 +38,8 @@ def test_dashboard_renders_workflow_forms_and_empty_state():
     assert 'action="/dashboard/actions/paper/tick"' in html
     assert "Operations Safety" in html
     assert "inactive" in html
+    assert "Broker Mode simulated" in html
+    assert "Trading Enabled false" in html
     assert "Safe For Live false" in html
     assert "Backtest Runs" in html
     assert "Paper Accounts" in html

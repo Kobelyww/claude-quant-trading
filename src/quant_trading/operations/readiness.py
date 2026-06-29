@@ -61,6 +61,17 @@ def build_operations_readiness(
         "safe_for_dry_run": pre_live_safe and safety_state.dry_run_enabled,
         "safe_for_live": False,
         "reasons": reasons,
+        "open_critical_incidents": open_critical_incidents,
+        "open_warning_incidents": open_warning_incidents,
+        "pending_approval_requests": pending_approvals,
+        "latest_data_sync_status": (
+            latest_data_sync["status"] if latest_data_sync is not None else None
+        ),
+        "latest_research_validation_status": (
+            latest_research_validation["validation_status"]
+            if latest_research_validation is not None
+            else None
+        ),
         "open_incidents": {
             "critical": open_critical_incidents,
             "warning": open_warning_incidents,
@@ -78,7 +89,7 @@ def build_operations_readiness(
 def _count_open_incidents(session: Session, severity: str) -> int:
     return session.scalar(
         select(func.count(SafetyIncidentORM.id)).where(
-            SafetyIncidentORM.status == "open",
+            SafetyIncidentORM.status != "resolved",
             SafetyIncidentORM.severity == severity,
         )
     ) or 0

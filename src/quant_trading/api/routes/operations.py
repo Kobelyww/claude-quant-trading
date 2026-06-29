@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from quant_trading.operations.readiness import build_operations_readiness
 from quant_trading.operations.safety import PreLiveSafetyDecision, PreLiveSafetyService
@@ -31,8 +31,8 @@ router = APIRouter(prefix="/ops", tags=["operations"])
 
 
 class KillSwitchCommand(BaseModel):
-    operator: str
-    reason: str
+    operator: str = Field(max_length=128)
+    reason: str = Field(max_length=1024)
 
     @field_validator("operator", "reason")
     @classmethod
@@ -43,8 +43,8 @@ class KillSwitchCommand(BaseModel):
 
 
 class OperatorNoteCommand(BaseModel):
-    operator: str
-    note: str
+    operator: str = Field(max_length=128)
+    note: str = Field(max_length=2048)
 
     @field_validator("operator", "note")
     @classmethod

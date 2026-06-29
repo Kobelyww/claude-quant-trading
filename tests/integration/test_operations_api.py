@@ -127,6 +127,11 @@ def test_readiness_defaults_to_pre_live_non_live_posture():
     assert payload["safe_for_dry_run"] is True
     assert payload["safe_for_live"] is False
     assert "live_execution_unavailable" in payload["reasons"]
+    assert payload["open_critical_incidents"] == 0
+    assert payload["open_warning_incidents"] == 0
+    assert payload["pending_approval_requests"] == 0
+    assert payload["latest_data_sync_status"] == "succeeded"
+    assert payload["latest_research_validation_status"] is None
     assert payload["open_incidents"] == {"critical": 0, "warning": 0}
     assert payload["pending_approvals"] == 0
     assert payload["stuck_jobs"] == 0
@@ -134,6 +139,53 @@ def test_readiness_defaults_to_pre_live_non_live_posture():
     assert payload["stale_data_reports"] == 1
     assert payload["latest_data_sync"]["status"] == "succeeded"
     assert payload["latest_research_validation"] is None
+
+
+def test_acknowledged_critical_incident_blocks_readiness_until_resolved():
+    client, engine = make_client()
+
+    with session_scope(engine) as session:
+        incident = SafetyIncidentRepository(session).create(
+            severity="critical",
+            category="execution_safety",
+            resource_type=None,
+            resource_id=None,
+            reason_code="provider_stale",
+            message="provider data stale",
+            payload={"symbol": "000001"},
+            created_at=datetime(2026, 6, 26, 9, 0, 0),
+        )
+        incident_id = incident.id
+
+    open_readiness = client.get("/ops/readiness").json()
+    assert open_readiness["open_critical_incidents"] == 1
+    assert open_readiness["safe_for_simulated_paper"] is False
+    assert open_readiness["safe_for_dry_run"] is False
+    assert "open_critical_incidents" in open_readiness["reasons"]
+
+    acknowledge = client.post(
+        f"/ops/incidents/{incident_id}/acknowledge",
+        json={"operator": "ops lead", "note": "checking provider"},
+    )
+    assert acknowledge.status_code == 200
+
+    acknowledged_readiness = client.get("/ops/readiness").json()
+    assert acknowledged_readiness["open_critical_incidents"] == 1
+    assert acknowledged_readiness["safe_for_simulated_paper"] is False
+    assert acknowledged_readiness["safe_for_dry_run"] is False
+    assert "open_critical_incidents" in acknowledged_readiness["reasons"]
+
+    resolve = client.post(
+        f"/ops/incidents/{incident_id}/resolve",
+        json={"operator": "ops lead", "note": "provider recovered"},
+    )
+    assert resolve.status_code == 200
+
+    resolved_readiness = client.get("/ops/readiness").json()
+    assert resolved_readiness["open_critical_incidents"] == 0
+    assert resolved_readiness["safe_for_simulated_paper"] is True
+    assert resolved_readiness["safe_for_dry_run"] is True
+    assert "open_critical_incidents" not in resolved_readiness["reasons"]
 
 
 def test_kill_switch_enable_disable_writes_events_and_updates_readiness():
@@ -251,6 +303,12 @@ def test_operations_commands_reject_blank_operator_and_reason_or_note():
         json={"operator": "ops", "note": ""},
     )
     assert incident.status_code == 400
+
+    overlong = client.post(
+        "/ops/kill-switch/enable",
+        json={"operator": "x" * 129, "reason": "pause"},
+    )
+    assert overlong.status_code == 400
 
 
 def test_order_intent_get_includes_decisions_and_approval_404_409_mapping():

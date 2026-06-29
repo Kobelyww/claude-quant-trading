@@ -41,9 +41,16 @@ def _date_only(value: date | datetime | str) -> date:
 
 def _try_decimal(value: Decimal | int | float | str | None) -> Decimal | None:
     try:
-        return _decimal(value)
+        decimal_value = _decimal(value)
     except (InvalidOperation, TypeError, ValueError):
         return None
+    return decimal_value if decimal_value.is_finite() else None
+
+
+def _try_int(value: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _try_date_only(value: date | datetime | str) -> date | None:
@@ -214,8 +221,8 @@ class PreLiveSafetyService:
             instrument_id=merged_input.instrument_id,
             side=merged_input.side_value,
             order_type=merged_input.order_type_value,
-            quantity=merged_input.quantity,
-            limit_price=merged_input.limit_price,
+            quantity=self._safe_order_quantity(merged_input),
+            limit_price=self._safe_limit_price(merged_input),
             estimated_price=estimated_price,
             estimated_notional=estimated_notional,
             broker_mode=merged_input.broker_mode,
@@ -391,18 +398,31 @@ class PreLiveSafetyService:
                 "blocked_max_single_order_notional",
                 "single order notional exceeds policy maximum",
             )
+        daily_turnover = _try_decimal(policy_input.daily_turnover)
         if (
-            _decimal(policy_input.daily_turnover) + notional
-            > self.profile.max_daily_turnover
+            daily_turnover is None
+            or daily_turnover + notional > self.profile.max_daily_turnover
         ):
             return self._blocked(
                 "blocked_max_daily_turnover",
                 "daily turnover exceeds policy maximum",
             )
-        if policy_input.daily_order_count >= self.profile.max_daily_order_count:
+        daily_order_count = _try_int(policy_input.daily_order_count)
+        if (
+            daily_order_count is None
+            or daily_order_count >= self.profile.max_daily_order_count
+        ):
             return self._blocked(
                 "blocked_max_daily_order_count",
                 "daily order count reached policy maximum",
+            )
+        if (
+            not self._has_valid_portfolio_scalars(policy_input)
+            or self._equity(policy_input) <= 0
+        ):
+            return self._blocked(
+                "blocked_max_gross_exposure",
+                "gross exposure exceeds policy maximum",
             )
         if self._exposure_ratio(policy_input) > self.profile.max_gross_exposure_ratio:
             return self._blocked(
@@ -417,7 +437,8 @@ class PreLiveSafetyService:
         if (
             self.profile.manual_approval_sell_without_position
             and policy_input.side_value == "sell"
-            and policy_input.position_quantity < policy_input.quantity
+            and self._safe_position_quantity(policy_input)
+            < self._safe_order_quantity(policy_input)
         ):
             return self._approval_required(
                 "manual_approval_required_sell_without_position",
@@ -642,7 +663,13 @@ class PreLiveSafetyService:
 
     def _drawdown(self, policy_input: SafetyPolicyInput) -> Decimal:
         equity = self._equity(policy_input)
-        peak_equity = _decimal(policy_input.peak_equity) if policy_input.peak_equity else equity
+        peak_equity = (
+            _try_decimal(policy_input.peak_equity)
+            if policy_input.peak_equity is not None
+            else equity
+        )
+        if peak_equity is None:
+            return Decimal("Infinity")
         if peak_equity <= 0:
             return Decimal("0")
         return (peak_equity - equity) / peak_equity
@@ -654,27 +681,41 @@ class PreLiveSafetyService:
         return abs(self._post_order_market_value(policy_input)) / equity
 
     def _post_order_market_value(self, policy_input: SafetyPolicyInput) -> Decimal:
-        market_value = _decimal(policy_input.market_value)
-        notional = policy_input.order_notional
+        market_value = _try_decimal(policy_input.market_value) or Decimal("0")
+        notional = self._safe_order_notional(policy_input)
         if policy_input.side_value == "buy":
             return market_value + notional
         if policy_input.side_value == "sell":
             existing_position_value = (
-                _decimal(policy_input.estimated_price)
-                * Decimal(max(policy_input.position_quantity, 0))
+                self._safe_estimated_price(policy_input)
+                * Decimal(max(self._safe_position_quantity(policy_input), 0))
             )
             reduction = min(notional, existing_position_value)
             return market_value - reduction
         return market_value
 
     def _is_valid_order_intent(self, policy_input: SafetyPolicyInput) -> bool:
-        if not isinstance(policy_input.quantity, int):
+        quantity = _try_int(policy_input.quantity)
+        if quantity is None:
             return False
-        return (
-            policy_input.quantity > 0
-            and policy_input.side_value in _VALID_ORDER_SIDES
-            and policy_input.order_type_value in _VALID_ORDER_TYPES
+        if policy_input.limit_price is not None:
+            limit_price = _try_decimal(policy_input.limit_price)
+            if limit_price is None or limit_price <= 0:
+                return False
+        return quantity > 0 and policy_input.side_value in _VALID_ORDER_SIDES and (
+            policy_input.order_type_value in _VALID_ORDER_TYPES
         )
+
+    def _has_valid_portfolio_scalars(self, policy_input: SafetyPolicyInput) -> bool:
+        if _try_decimal(policy_input.cash) is None:
+            return False
+        if _try_decimal(policy_input.market_value) is None:
+            return False
+        if policy_input.peak_equity is not None and (
+            _try_decimal(policy_input.peak_equity) is None
+        ):
+            return False
+        return _try_int(policy_input.position_quantity) is not None
 
     def _has_valid_price(self, policy_input: SafetyPolicyInput) -> bool:
         estimated_price = _try_decimal(policy_input.estimated_price)
@@ -689,15 +730,30 @@ class PreLiveSafetyService:
         estimated_price = self._safe_estimated_price(policy_input)
         if estimated_price <= 0:
             return Decimal("0")
-        if not isinstance(policy_input.quantity, int):
+        quantity = self._safe_order_quantity(policy_input)
+        if quantity <= 0:
             return Decimal("0")
-        return estimated_price * Decimal(policy_input.quantity)
+        return estimated_price * Decimal(quantity)
 
     def _safe_estimated_price(self, policy_input: SafetyPolicyInput) -> Decimal:
         return _try_decimal(policy_input.estimated_price) or Decimal("0")
 
+    def _safe_limit_price(self, policy_input: SafetyPolicyInput) -> Decimal | None:
+        if policy_input.limit_price is None:
+            return None
+        limit_price = _try_decimal(policy_input.limit_price)
+        return limit_price if limit_price is not None and limit_price > 0 else None
+
+    def _safe_order_quantity(self, policy_input: SafetyPolicyInput) -> int:
+        return _try_int(policy_input.quantity) or 0
+
+    def _safe_position_quantity(self, policy_input: SafetyPolicyInput) -> int:
+        return _try_int(policy_input.position_quantity) or 0
+
     def _equity(self, policy_input: SafetyPolicyInput) -> Decimal:
-        return _decimal(policy_input.cash) + _decimal(policy_input.market_value)
+        cash = _try_decimal(policy_input.cash) or Decimal("0")
+        market_value = _try_decimal(policy_input.market_value) or Decimal("0")
+        return cash + market_value
 
     def _validate_broker_mode(self, broker_mode: str) -> None:
         if broker_mode not in _VALID_BROKER_MODES:

@@ -132,14 +132,16 @@ def test_kill_switch_block_persists_without_approval_request():
 
 
 @pytest.mark.parametrize(
-    ("overrides", "reason_code"),
+    ("overrides", "reason_code", "expected_notional"),
     [
-        ({"quantity": "bad"}, "blocked_invalid_order_intent"),
-        ({"estimated_price": "bad"}, "blocked_invalid_price"),
+        ({"quantity": "bad"}, "blocked_invalid_order_intent", "0"),
+        ({"estimated_price": "bad"}, "blocked_invalid_price", "0"),
+        ({"daily_turnover": "bad"}, "blocked_max_daily_turnover", "1000"),
+        ({"cash": "bad"}, "blocked_max_gross_exposure", "1000"),
     ],
 )
 def test_malformed_order_inputs_persist_blocked_decision_without_approval(
-    overrides, reason_code
+    overrides, reason_code, expected_notional
 ):
     engine = make_engine_with_schema()
     now = datetime(2026, 6, 26, 9, 30, 0)
@@ -174,7 +176,7 @@ def test_malformed_order_inputs_persist_blocked_decision_without_approval(
         assert len(decisions) == 1
         assert decisions[0].decision_type == "blocked"
         assert decisions[0].reason_code == reason_code
-        assert policy_payload["estimated_notional"] == "0"
+        assert policy_payload["estimated_notional"] == expected_notional
         assert policy_payload["broker_submission_allowed"] is False
 
 

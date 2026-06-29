@@ -219,6 +219,40 @@ def test_malformed_timestamp_inputs_are_blocked_as_stale_without_runtime_error(
     assert decision.broker_submission_allowed is False
 
 
+def test_malformed_daily_turnover_is_blocked_without_runtime_error():
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(_policy_input(daily_turnover="bad"))
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_max_daily_turnover"
+    assert decision.broker_submission_allowed is False
+
+
+@pytest.mark.parametrize("field", ["cash", "market_value", "peak_equity"])
+def test_malformed_portfolio_scalars_are_blocked_without_runtime_error(field):
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(_policy_input(**{field: "bad"}))
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_max_gross_exposure"
+    assert decision.broker_submission_allowed is False
+
+
+@pytest.mark.parametrize("side", [OrderSide.BUY, OrderSide.SELL])
+def test_malformed_position_quantity_is_blocked_without_runtime_error(side):
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(
+        _policy_input(side=side, position_quantity="bad")
+    )
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_max_gross_exposure"
+    assert decision.broker_submission_allowed is False
+
+
 def test_simulated_order_within_limits_is_approved():
     service = PreLiveSafetyService()
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from quant_trading.core.enums import OrderSide, OrderType
@@ -152,6 +153,12 @@ class PreLiveSafetyDecision:
 
 
 @dataclass(frozen=True)
+class PreLiveDailyUsage:
+    turnover: Decimal
+    order_count: int
+
+
+@dataclass(frozen=True)
 class PolicyDecision:
     decision: str
     reason_code: str
@@ -270,6 +277,25 @@ class PreLiveSafetyService:
             policy_input=merged_input,
             now=now,
             approval_request=approval,
+        )
+
+    def get_daily_order_usage(self, as_of: date | datetime | str) -> PreLiveDailyUsage:
+        session = self._require_session()
+        usage_date = _date_only(as_of)
+        start = datetime.combine(usage_date, time.min)
+        end = start + timedelta(days=1)
+        rows = session.scalars(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.status.in_(
+                    ("submitted", "risk_approved", "operator_approved")
+                ),
+                ExecutionOrderIntentORM.created_at >= start,
+                ExecutionOrderIntentORM.created_at < end,
+            )
+        ).all()
+        return PreLiveDailyUsage(
+            turnover=sum((row.estimated_notional for row in rows), Decimal("0")),
+            order_count=len(rows),
         )
 
     def approve_order_intent(

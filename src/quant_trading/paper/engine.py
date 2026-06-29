@@ -143,6 +143,15 @@ class PaperTradingEngine:
             orders_rejected = 0
             fills_created = 0
             risk_decision_count = 0
+            safety_service = PreLiveSafetyService(session)
+            safety_now = self._safety_now(latest.timestamp)
+            daily_usage = (
+                safety_service.get_daily_order_usage(safety_now)
+                if self.enable_pre_live_safety
+                else None
+            )
+            in_tick_daily_turnover = Decimal("0")
+            in_tick_daily_order_count = 0
             for intent in strategy.on_bar(bars, portfolio):
                 order = repository.create_order(run, intent, latest.timestamp)
                 orders_created += 1
@@ -155,11 +164,12 @@ class PaperTradingEngine:
                     continue
 
                 client_order_id = f"paper-{run.id}-{order.id}"
-                safety_now = self._safety_now(latest.timestamp)
+                estimated_price = intent.limit_price or latest.close
+                estimated_notional = estimated_price * Decimal(intent.quantity)
                 safety_decision = None
                 if self.enable_pre_live_safety:
                     latest_position = portfolio.positions.get(latest.instrument_id)
-                    safety_decision = PreLiveSafetyService(session).evaluate_order_intent(
+                    safety_decision = safety_service.evaluate_order_intent(
                         SafetyPolicyInput(
                             client_order_id=client_order_id,
                             symbol=intent.symbol,
@@ -168,15 +178,23 @@ class PaperTradingEngine:
                             order_type=intent.order_type,
                             quantity=intent.quantity,
                             limit_price=intent.limit_price,
-                            estimated_price=intent.limit_price or latest.close,
+                            estimated_price=estimated_price,
                             broker_mode=BrokerExecutionMode(self.broker.mode),
                             latest_bar=latest,
                             as_of=safety_now,
                             cash=portfolio.cash,
                             market_value=portfolio.market_value,
                             peak_equity=portfolio.peak_equity or portfolio.equity,
-                            daily_turnover=Decimal("0"),
-                            daily_order_count=0,
+                            daily_turnover=(
+                                daily_usage.turnover + in_tick_daily_turnover
+                                if daily_usage is not None
+                                else Decimal("0")
+                            ),
+                            daily_order_count=(
+                                daily_usage.order_count + in_tick_daily_order_count
+                                if daily_usage is not None
+                                else 0
+                            ),
                             position_quantity=(
                                 latest_position.quantity if latest_position is not None else 0
                             ),
@@ -190,6 +208,8 @@ class PaperTradingEngine:
                     if not safety_decision.broker_submission_allowed:
                         repository.mark_order_skipped(order, safety_decision.reason_code)
                         continue
+                    in_tick_daily_turnover += estimated_notional
+                    in_tick_daily_order_count += 1
 
                 request = broker_order_request_from_intent(
                     intent,
@@ -205,7 +225,7 @@ class PaperTradingEngine:
                     created_at=latest.timestamp,
                 )
                 if safety_decision is not None and safety_decision.order_intent_id is not None:
-                    PreLiveSafetyService(session).mark_order_intent_submitted(
+                    safety_service.mark_order_intent_submitted(
                         safety_decision.order_intent_id,
                         submitted_at=safety_now,
                     )

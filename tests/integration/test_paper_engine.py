@@ -95,6 +95,26 @@ class SizedBuyStrategy:
 
 
 @dataclass
+class MultiBuyStrategy:
+    order_count: int
+    quantity: int = 1
+    name: str = "multi_buy"
+
+    def on_bar(self, bars, portfolio):
+        latest = bars[-1]
+        return [
+            OrderIntent(
+                instrument_id=latest.instrument_id,
+                symbol=latest.symbol,
+                side=OrderSide.BUY,
+                quantity=self.quantity,
+                reason=f"paper_tick_multi_buy_{index}",
+            )
+            for index in range(self.order_count)
+        ]
+
+
+@dataclass
 class SellAllStrategy:
     name: str = "sell_all"
 
@@ -775,6 +795,140 @@ def test_manual_approval_required_blocks_paper_broker_submission(
     assert safety_intent.approval_required is True
     assert approval.status == "pending"
     assert approval.reason_code == "manual_approval_required_notional"
+    assert broker_events == []
+    assert fill_count == 0
+    assert position_count == 0
+
+
+def test_daily_order_count_blocks_twenty_first_paper_order_before_submission(
+    legacy_sqlite_db: Path,
+):
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    strategy = MultiBuyStrategy(order_count=21)
+    account_id = paper.create_account(
+        name="Daily Count Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    run_id = paper.start_run(
+        account_id=account_id,
+        symbol="000001",
+        strategy=strategy,
+        strategy_name=strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    summary = paper.run_one_tick(
+        run_id=run_id,
+        strategy=strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with session_scope(engine) as session:
+        orders = session.scalars(
+            select(PaperOrderORM).where(PaperOrderORM.run_id == run_id).order_by(PaperOrderORM.id)
+        ).all()
+        blocked_order = orders[-1]
+        safety_intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.paper_run_id == run_id,
+                ExecutionOrderIntentORM.paper_order_id == blocked_order.id,
+            )
+        )
+        broker_events = BrokerOrderEventRepository(session).list_for_run(run_id)
+        blocked_broker_events = BrokerOrderEventRepository(session).list_for_order(blocked_order.id)
+        blocked_fill_count = session.scalar(
+            select(func.count())
+            .select_from(PaperFillORM)
+            .where(PaperFillORM.order_id == blocked_order.id)
+        )
+        position = session.scalar(
+            select(PaperPositionORM).where(PaperPositionORM.account_id == account_id)
+        )
+
+    assert summary.orders_created == 21
+    assert summary.orders_filled == 20
+    assert summary.fills_created == 20
+    assert len(orders) == 21
+    assert [order.status for order in orders[:20]] == ["filled"] * 20
+    assert blocked_order.status == "skipped"
+    assert blocked_order.risk_decision == "blocked_max_daily_order_count"
+    assert safety_intent.status == "blocked"
+    assert safety_intent.blocked_reason_code == "blocked_max_daily_order_count"
+    assert len(broker_events) == 20
+    assert blocked_broker_events == []
+    assert blocked_fill_count == 0
+    assert position.quantity == 20
+
+
+def test_persisted_daily_order_count_blocks_next_paper_run_before_submission(
+    legacy_sqlite_db: Path,
+):
+    paper, engine = make_paper_engine(legacy_sqlite_db)
+    first_strategy = MultiBuyStrategy(order_count=20)
+    first_account_id = paper.create_account(
+        name="Daily Count First Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    first_run_id = paper.start_run(
+        account_id=first_account_id,
+        symbol="000001",
+        strategy=first_strategy,
+        strategy_name=first_strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    first_summary = paper.run_one_tick(
+        run_id=first_run_id,
+        strategy=first_strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    second_strategy = RecordingBuyStrategy()
+    second_account_id = paper.create_account(
+        name="Daily Count Second Paper",
+        initial_cash=Decimal("100000"),
+        base_currency="CNY",
+    )
+    second_run_id = paper.start_run(
+        account_id=second_account_id,
+        symbol="000001",
+        strategy=second_strategy,
+        strategy_name=second_strategy.name,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+    second_summary = paper.run_one_tick(
+        run_id=second_run_id,
+        strategy=second_strategy,
+        strategy_status=StrategyStatus.APPROVED,
+    )
+
+    with session_scope(engine) as session:
+        order = session.scalar(select(PaperOrderORM).where(PaperOrderORM.run_id == second_run_id))
+        safety_intent = session.scalar(
+            select(ExecutionOrderIntentORM).where(
+                ExecutionOrderIntentORM.paper_run_id == second_run_id,
+                ExecutionOrderIntentORM.paper_order_id == order.id,
+            )
+        )
+        broker_events = BrokerOrderEventRepository(session).list_for_run(second_run_id)
+        fill_count = session.scalar(
+            select(func.count()).select_from(PaperFillORM).where(PaperFillORM.run_id == second_run_id)
+        )
+        position_count = session.scalar(
+            select(func.count())
+            .select_from(PaperPositionORM)
+            .where(PaperPositionORM.account_id == second_account_id)
+        )
+
+    assert first_summary.orders_filled == 20
+    assert second_summary.orders_created == 1
+    assert second_summary.orders_filled == 0
+    assert second_summary.fills_created == 0
+    assert order.status == "skipped"
+    assert order.risk_decision == "blocked_max_daily_order_count"
+    assert safety_intent.status == "blocked"
+    assert safety_intent.blocked_reason_code == "blocked_max_daily_order_count"
     assert broker_events == []
     assert fill_count == 0
     assert position_count == 0

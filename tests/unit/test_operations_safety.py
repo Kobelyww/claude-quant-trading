@@ -144,6 +144,32 @@ def test_sell_without_position_requires_operator_approval_when_profile_requires_
     assert decision.broker_submission_allowed is False
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"market_value": Decimal("0"), "position_quantity": 0},
+        {"market_value": Decimal("1000"), "position_quantity": 100},
+    ],
+)
+def test_uncovered_sell_notional_blocks_when_post_order_exposure_exceeds_limit(overrides):
+    service = PreLiveSafetyService()
+
+    decision = service.evaluate_policy(
+        _policy_input(
+            side=OrderSide.SELL,
+            cash=Decimal("40000"),
+            peak_equity=Decimal("41000"),
+            quantity=5000,
+            estimated_price=Decimal("10"),
+            **overrides,
+        )
+    )
+
+    assert decision.decision_type == "blocked"
+    assert decision.reason_code == "blocked_max_gross_exposure"
+    assert decision.broker_submission_allowed is False
+
+
 def test_live_mode_is_always_blocked_even_when_enabled():
     service = PreLiveSafetyService()
 

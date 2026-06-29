@@ -691,7 +691,8 @@ class PreLiveSafetyService:
                 * Decimal(max(self._safe_position_quantity(policy_input), 0))
             )
             reduction = min(notional, existing_position_value)
-            return market_value - reduction
+            uncovered_notional = max(notional - existing_position_value, Decimal("0"))
+            return market_value - reduction + uncovered_notional
         return market_value
 
     def _is_valid_order_intent(self, policy_input: SafetyPolicyInput) -> bool:

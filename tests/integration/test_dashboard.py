@@ -111,6 +111,19 @@ def test_dashboard_displays_operations_safety_posture():
                 created_at=now,
             )
         )
+        session.add(
+            SafetyIncidentORM(
+                severity="warning",
+                category="readiness",
+                status="open",
+                resource_type="execution_order_intent",
+                resource_id=intent.id,
+                reason_code="approval_pending",
+                message="warning incident visible during dashboard review",
+                payload="{}",
+                created_at=now,
+            )
+        )
 
     response = client.get("/dashboard")
 
@@ -124,9 +137,13 @@ def test_dashboard_displays_operations_safety_posture():
     assert "Safe For Live" in html
     assert "false" in html
     assert "Pending Approvals" in html
-    assert "Open Incidents" in html
+    assert "Open Critical Incidents" in html
+    assert "Open Critical Incidents 1" in html
+    assert "Open Warning Incidents" in html
+    assert "Open Warning Incidents 1" in html
     assert "halt for incident review" in html
     assert "provider data stale during dashboard review" in html
+    assert "warning incident visible during dashboard review" in html
     assert "Recent Safety Decisions" in html
     assert "Recent Order Intents" in html
     assert "Recent Approval Requests" in html

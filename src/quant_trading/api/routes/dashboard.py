@@ -338,9 +338,6 @@ def _render_dashboard(
 def _operations_safety_section(state: dict[str, Any]) -> str:
     readiness = state["operations_readiness"]
     kill_switch = "active" if readiness["global_kill_switch_active"] else "inactive"
-    open_incidents = (
-        readiness["open_critical_incidents"] + readiness["open_warning_incidents"]
-    )
     safety_state = readiness.get("safety_state") or {}
     decisions = _table(
         "Recent Safety Decisions",
@@ -423,7 +420,8 @@ def _operations_safety_section(state: dict[str, Any]) -> str:
       {_metric("Safe For Dry Run", _bool_text(readiness["safe_for_dry_run"]))}
       {_metric("Safe For Live", _bool_text(readiness["safe_for_live"]))}
       {_metric("Pending Approvals", readiness["pending_approval_requests"])}
-      {_metric("Open Incidents", open_incidents)}
+      {_metric("Open Critical Incidents", readiness["open_critical_incidents"])}
+      {_metric("Open Warning Incidents", readiness["open_warning_incidents"])}
       {_metric("Safety Reason", safety_state.get("reason") or "")}
       {_metric("Readiness Reasons", ", ".join(readiness["reasons"]))}
     </div>

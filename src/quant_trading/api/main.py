@@ -15,6 +15,7 @@ from quant_trading.api.routes import (
     health,
     instruments,
     jobs,
+    operations,
     paper,
     research_validation_reports,
     schedules,
@@ -56,6 +57,7 @@ def create_app(engine: Engine | None = None, settings: AppSettings | None = None
     app.include_router(agents.router)
     app.include_router(agent_candidates.router)
     app.include_router(jobs.router)
+    app.include_router(operations.router)
     app.include_router(schedules.router)
     app.include_router(data_sync.router)
     app.include_router(data_quality_reports.router)

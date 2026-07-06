@@ -15,6 +15,7 @@ from quant_trading.agents.backtest_review import (
 )
 from quant_trading.agents.llm import DeepSeekLLMClient, LLMClient
 from quant_trading.agents.market_analysis import build_market_analysis_prompt, compute_market_metrics
+from quant_trading.agents.memory import LearningMemoryService
 from quant_trading.agents.models import (
     AGENT_BACKTEST_REVIEW,
     AGENT_MARKET_ANALYSIS,
@@ -44,6 +45,8 @@ from quant_trading.storage.repositories import (
 from quant_trading.validation.metrics import cap_readiness
 
 STATUS_BACKTEST_SUCCEEDED = "backtest_succeeded"
+PROMPT_MEMORY_LIMIT = 8
+PROMPT_MEMORY_MAX_CHARS = 3000
 
 
 def run_market_analysis_agent(
@@ -167,7 +170,19 @@ def run_strategy_idea_agent(
 
     try:
         llm_client = llm_client or (llm_client_factory or DeepSeekLLMClient.from_settings)(settings)
-        prompt = build_strategy_idea_prompt(clean_request, settings.agent_prompt_max_chars)
+        active_skills = _load_active_strategy_skills(engine)
+        memories = LearningMemoryService(engine).retrieve_for_prompt(
+            symbol=clean_request.symbol,
+            limit=PROMPT_MEMORY_LIMIT,
+            max_chars=PROMPT_MEMORY_MAX_CHARS,
+        )
+        prompt = build_strategy_idea_prompt(
+            clean_request,
+            settings.agent_prompt_max_chars,
+            memory_context=memories,
+            skill_context=active_skills,
+            redaction_settings=settings,
+        )
         response = llm_client.complete(prompt)
         parsed_payload = parse_strategy_idea_response(
             response.content[: settings.agent_result_max_chars]
@@ -274,6 +289,13 @@ def run_backtest_review_agent(
         resolved_backtest_run_id = int(context["backtest_run"]["id"])
         metrics = context["metrics"]
         symbol = str(metrics.get("symbol") or context["backtest_run"].get("symbol") or "")
+        strategy_skill_id = _resolve_strategy_skill_id(engine, context)
+        context["memory_context"] = LearningMemoryService(engine).retrieve_for_prompt(
+            symbol=symbol[:32] if symbol else None,
+            strategy_skill_id=strategy_skill_id,
+            limit=PROMPT_MEMORY_LIMIT,
+            max_chars=PROMPT_MEMORY_MAX_CHARS,
+        )
         model_name = getattr(llm_client, "model", settings.deepseek_model)
 
         with session_scope(engine) as session:
@@ -299,7 +321,11 @@ def run_backtest_review_agent(
             )
 
         llm_client = llm_client or (llm_client_factory or DeepSeekLLMClient.from_settings)(settings)
-        prompt = build_backtest_review_prompt(context, settings.agent_prompt_max_chars)
+        prompt = build_backtest_review_prompt(
+            context,
+            settings.agent_prompt_max_chars,
+            redaction_settings=settings,
+        )
         response = llm_client.complete(prompt)
         parsed_payload = parse_backtest_review_response(
             response.content[: settings.agent_result_max_chars],
@@ -387,6 +413,48 @@ def _validate_backtest_review_request_linkage(
             raise ValueError("candidate review not found")
         if review.backtest_run_id != request.backtest_run_id:
             raise ValueError("backtest_run_id does not match candidate review")
+
+
+def _load_active_strategy_skills(engine: Engine) -> list[Any]:
+    with session_scope(engine) as session:
+        skill_repo = StrategySkillRepository(session)
+        skill_repo.ensure_seeded(_utcnow())
+        return StrategySkillRegistry.from_repository(skill_repo).list_active()
+
+
+def _resolve_strategy_skill_id(engine: Engine, context: dict[str, Any]) -> int | None:
+    skill_key = _extract_strategy_skill_key(context)
+    if not skill_key:
+        return None
+    with session_scope(engine) as session:
+        skill_repo = StrategySkillRepository(session)
+        skill_repo.ensure_seeded(_utcnow())
+        row = skill_repo.get_active(skill_key)
+        return row.id if row is not None else None
+
+
+def _extract_strategy_skill_key(context: dict[str, Any]) -> str | None:
+    candidate_review = context.get("candidate_review")
+    if isinstance(candidate_review, dict):
+        candidate_payload = candidate_review.get("candidate_payload")
+        if isinstance(candidate_payload, dict):
+            value = candidate_payload.get("strategy_skill_key")
+            if value:
+                return str(value)
+    source_result = context.get("source_agent_result")
+    if isinstance(source_result, dict):
+        candidate_payload = source_result.get("candidate_payload")
+        if isinstance(candidate_payload, dict):
+            value = candidate_payload.get("strategy_skill_key")
+            if value:
+                return str(value)
+    metrics = context.get("metrics")
+    if isinstance(metrics, dict) and metrics.get("strategy_name"):
+        return str(metrics["strategy_name"])
+    backtest_run = context.get("backtest_run")
+    if isinstance(backtest_run, dict) and backtest_run.get("strategy_name"):
+        return str(backtest_run["strategy_name"])
+    return None
 
 
 def _json_dumps(payload: dict[str, Any]) -> str:

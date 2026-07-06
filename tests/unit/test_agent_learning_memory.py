@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 import json
 
@@ -10,8 +10,13 @@ from quant_trading.agents.memory import (
     LearningMemoryService,
 )
 from quant_trading.agents.output_safety import contains_unsafe_agent_text
+from quant_trading.agents.prompt_context import format_memory_context_for_prompt
 from quant_trading.storage.db import create_all, make_engine, session_scope
-from quant_trading.storage.models import BacktestRunORM, ResearchValidationReportORM
+from quant_trading.storage.models import (
+    AgentLearningMemoryORM,
+    BacktestRunORM,
+    ResearchValidationReportORM,
+)
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
     AgentRunRepository,
@@ -264,7 +269,9 @@ def test_memory_service_ignores_unknown_in_progress_validation_status(
     assert service.extract_from_validation_report(report.id) == []
 
 
-def test_memory_service_retrieves_by_scope_budget_and_retires(in_memory_engine):
+def test_memory_service_retrieves_prompt_context_by_scope_budget_and_retires(
+    in_memory_engine,
+):
     service = LearningMemoryService(in_memory_engine)
     global_memory = service.create_manual_memory(
         memory_type="strategy_failure",
@@ -288,18 +295,119 @@ def test_memory_service_retrieves_by_scope_budget_and_retires(in_memory_engine):
         importance=Decimal("0.4"),
     )
 
-    results = service.retrieve(symbol="000001", limit=2, max_chars=80)
+    results = service.retrieve_for_prompt(symbol="000001", limit=2, max_chars=80)
 
     assert [row.id for row in results] == [symbol_memory.id, global_memory.id]
     assert sum(len(row.title) + len(row.content) for row in results) <= 80
 
     retired = service.retire(symbol_memory.id, operator="tester", reason="superseded")
-    remaining = service.retrieve(symbol="000001", limit=8, max_chars=3000)
+    remaining = service.retrieve_for_prompt(symbol="000001", limit=8, max_chars=3000)
 
     assert retired.id == symbol_memory.id
     assert symbol_memory.id not in {row.id for row in remaining}
     with pytest.raises(LearningMemoryNotFoundError):
         service.retire(999999, operator="tester", reason="missing")
+
+
+def test_symbol_scoped_manual_memory_defaults_to_180_day_expiry(in_memory_engine):
+    service = LearningMemoryService(in_memory_engine)
+
+    memory = service.create_manual_memory(
+        memory_type="strategy_failure",
+        scope="symbol",
+        title="symbol lesson",
+        content="Symbol validation lesson.",
+        reason_code="symbol_lesson_expiry",
+        operator="tester",
+        source_id=22,
+        symbol="000001",
+    )
+
+    with session_scope(in_memory_engine) as session:
+        row = session.get(AgentLearningMemoryORM, memory.id)
+
+    assert row is not None
+    assert row.expires_at is not None
+    delta = row.expires_at - row.created_at
+    assert timedelta(days=179, hours=23) <= delta <= timedelta(days=180, hours=1)
+
+
+def test_symbol_scoped_extracted_memory_defaults_to_180_day_expiry(
+    in_memory_engine,
+    rejected_candidate_review,
+):
+    memory = LearningMemoryService(in_memory_engine).extract_from_candidate_review(
+        rejected_candidate_review.id
+    )[0]
+
+    with session_scope(in_memory_engine) as session:
+        row = session.get(AgentLearningMemoryORM, memory.id)
+
+    assert row is not None
+    assert row.expires_at is not None
+    delta = row.expires_at - row.created_at
+    assert timedelta(days=179, hours=23) <= delta <= timedelta(days=180, hours=1)
+
+
+def test_memory_retrieve_for_prompt_excludes_low_confidence_memories(in_memory_engine):
+    service = LearningMemoryService(in_memory_engine)
+    low_confidence = service.create_manual_memory(
+        memory_type="strategy_failure",
+        scope="symbol",
+        title="low confidence",
+        content="Do not include this weak signal in prompts.",
+        reason_code="low_confidence",
+        operator="tester",
+        source_id=31,
+        symbol="000001",
+        confidence=Decimal("0.39"),
+        importance=Decimal("0.9"),
+    )
+    high_confidence = service.create_manual_memory(
+        memory_type="strategy_failure",
+        scope="symbol",
+        title="high confidence",
+        content="Include this validated signal in prompts.",
+        reason_code="high_confidence",
+        operator="tester",
+        source_id=32,
+        symbol="000001",
+        confidence=Decimal("0.40"),
+        importance=Decimal("0.8"),
+    )
+
+    results = service.retrieve_for_prompt(symbol="000001")
+
+    assert high_confidence.id in {row.id for row in results}
+    assert low_confidence.id not in {row.id for row in results}
+
+
+def test_retrieved_prompt_memory_context_formats_within_3000_char_budget(
+    in_memory_engine,
+):
+    service = LearningMemoryService(in_memory_engine)
+    for index in range(8):
+        service.create_manual_memory(
+            memory_type="strategy_failure",
+            scope="symbol",
+            title=f"Long prompt memory {index}",
+            content="research context " * 80,
+            reason_code=f"long_memory_{index}",
+            operator="tester",
+            source_id=100 + index,
+            symbol="000001",
+            confidence=Decimal("0.9"),
+            importance=Decimal("0.9"),
+        )
+
+    memories = service.retrieve_for_prompt(
+        symbol="000001",
+        limit=8,
+        max_chars=3000,
+    )
+    formatted = format_memory_context_for_prompt(memories, max_chars=3000)
+
+    assert len(formatted) <= 3000
 
 
 def test_memory_service_extracts_safety_incident_lesson(in_memory_engine):

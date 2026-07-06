@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from quant_trading.api.main import create_app
 from quant_trading.config import AppSettings
 from quant_trading.agents.llm import FakeLLMClient
+from quant_trading.agents.memory import LearningMemoryService
 from quant_trading.agents.models import (
     BacktestReviewRequest,
     MarketAnalysisRequest,
@@ -143,6 +144,39 @@ def test_run_strategy_idea_agent_persists_success():
     assert persisted_result["backtest_request_payload"] == result["backtest_request_payload"]
 
 
+def test_run_strategy_idea_agent_injects_retrieved_memories_and_active_skills():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    LearningMemoryService(engine).create_manual_memory(
+        memory_type="strategy_failure",
+        scope="symbol",
+        title="Validation did not pass",
+        content="Repeated walk-forward failure on similar moving-average windows.",
+        reason_code="walk_forward_failed",
+        operator="tester",
+        source_id=41,
+        symbol="000001",
+        confidence=Decimal("0.9"),
+    )
+    llm = FakeLLMClient(VALID_MA_CROSS_RESPONSE)
+
+    run_strategy_idea_agent(
+        engine,
+        StrategyIdeaRequest(idea="Buy pullbacks in an uptrend", symbol="000001"),
+        llm_client=llm,
+    )
+
+    assert len(llm.prompts) == 1
+    prompt = llm.prompts[0]
+    assert "Relevant research memories:" in prompt
+    assert "[strategy_failure/walk_forward_failed]" in prompt
+    assert "Repeated walk-forward failure" in prompt
+    assert "Available strategy skills:" in prompt
+    assert "ma_cross v1.0.0" in prompt
+    assert "strategy_skill_key" in prompt
+    assert "strategy_skill_version" in prompt
+
+
 def test_run_strategy_idea_agent_marks_unparseable_text_needs_review():
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
@@ -215,6 +249,49 @@ def test_run_backtest_review_agent_persists_research_only_result():
     assert review.status == "review_succeeded"
     assert review.review_agent_run_id == result["agent_run_id"]
     assert review.error_message is None
+
+
+def test_run_backtest_review_agent_injects_memory_context_after_validation_context():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id, backtest_run_id = _seed_backtest_review_candidate(engine)
+    _link_validation_reports(
+        engine,
+        candidate_review_id,
+        readiness_floor="not_ready",
+    )
+    LearningMemoryService(engine).create_manual_memory(
+        memory_type="strategy_failure",
+        scope="symbol",
+        title="Validation did not pass",
+        content="Similar parameters repeatedly failed validation.",
+        reason_code="walk_forward_failed",
+        operator="tester",
+        source_id=42,
+        symbol="000001",
+        confidence=Decimal("0.9"),
+    )
+    llm = FakeLLMClient(VALID_BACKTEST_REVIEW_RESPONSE)
+
+    run_backtest_review_agent(
+        engine,
+        BacktestReviewRequest(
+            candidate_review_id=candidate_review_id,
+            backtest_run_id=backtest_run_id,
+        ),
+        llm_client=llm,
+    )
+
+    assert len(llm.prompts) == 1
+    prompt = llm.prompts[0]
+    assert '"research_validation_report"' in prompt
+    assert "Relevant research memories:" in prompt
+    assert prompt.index('"research_validation_report"') < prompt.index(
+        "Relevant research memories:"
+    )
+    assert "[strategy_failure/walk_forward_failed]" in prompt
+    assert "Similar parameters repeatedly failed validation." in prompt
+    assert "may not override validation floors" in prompt
 
 
 def test_run_backtest_review_agent_rejects_missing_validation_report_without_agent_row():

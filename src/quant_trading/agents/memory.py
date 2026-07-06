@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 from typing import Any
@@ -26,6 +26,10 @@ class LearningMemoryError(ValueError):
 
 class LearningMemoryNotFoundError(LearningMemoryError):
     pass
+
+
+DEFAULT_SYMBOL_MEMORY_EXPIRY_DAYS = 180
+MIN_PROMPT_MEMORY_CONFIDENCE = Decimal("0.4")
 
 
 @dataclass(frozen=True)
@@ -102,9 +106,11 @@ class LearningMemoryService:
             if note:
                 content = f"{content} Operator note: {note}"
             _ensure_safe_memory_text(title, content)
+            now = _utcnow()
+            scope = "symbol" if review.symbol else "global"
             row, _ = AgentLearningMemoryRepository(session).get_or_create_active(
                 memory_type="operator_decision",
-                scope="symbol" if review.symbol else "global",
+                scope=scope,
                 source_type="candidate_review",
                 source_id=review.id,
                 reason_code="candidate_rejected",
@@ -119,8 +125,9 @@ class LearningMemoryService:
                 },
                 confidence=Decimal("1"),
                 importance=Decimal("0.8"),
-                now=_utcnow(),
+                now=now,
                 symbol=review.symbol,
+                expires_at=_default_expires_at(scope, now, None),
                 created_by="system",
             )
             return [_to_payload(row)]
@@ -163,9 +170,11 @@ class LearningMemoryService:
                 return []
 
             _ensure_safe_memory_text(title, content)
+            now = _utcnow()
+            scope = "symbol" if report.symbol else "global"
             row, _ = AgentLearningMemoryRepository(session).get_or_create_active(
                 memory_type=memory_type,
-                scope="symbol" if report.symbol else "global",
+                scope=scope,
                 source_type="research_validation_report",
                 source_id=report.id,
                 reason_code=reason_code,
@@ -181,8 +190,9 @@ class LearningMemoryService:
                 },
                 confidence=confidence,
                 importance=importance,
-                now=_utcnow(),
+                now=now,
                 symbol=report.symbol,
+                expires_at=_default_expires_at(scope, now, None),
                 created_by="system",
             )
             return [_to_payload(row)]
@@ -230,6 +240,26 @@ class LearningMemoryService:
         strategy_skill_id: int | None = None,
         memory_types: list[str] | None = None,
         limit: int = 8,
+    ) -> list[MemoryPayload]:
+        if limit <= 0:
+            return []
+
+        with session_scope(self.engine) as session:
+            rows = AgentLearningMemoryRepository(session).list_active(
+                symbol=symbol,
+                strategy_skill_id=strategy_skill_id,
+                memory_types=memory_types,
+                limit=limit,
+                now=_utcnow(),
+            )
+            return [_to_payload(row) for row in rows]
+
+    def retrieve_for_prompt(
+        self,
+        symbol: str | None = None,
+        strategy_skill_id: int | None = None,
+        memory_types: list[str] | None = None,
+        limit: int = 8,
         max_chars: int = 3000,
     ) -> list[MemoryPayload]:
         if limit <= 0 or max_chars <= 0:
@@ -240,12 +270,14 @@ class LearningMemoryService:
                 symbol=symbol,
                 strategy_skill_id=strategy_skill_id,
                 memory_types=memory_types,
-                limit=max(limit * 3, limit),
+                limit=max(limit * 10, 50),
                 now=_utcnow(),
             )
             results: list[MemoryPayload] = []
             used_chars = 0
             for row in rows:
+                if _decimal(row.confidence) < MIN_PROMPT_MEMORY_CONFIDENCE:
+                    continue
                 if contains_unsafe_agent_text([row.title, row.content]):
                     continue
                 row_chars = len(row.title) + len(row.content)
@@ -292,6 +324,8 @@ class LearningMemoryService:
         title = title.strip()[:160]
         content = content.strip()[:4000]
         _ensure_safe_memory_text(title, content)
+        now = _utcnow()
+        resolved_expires_at = _default_expires_at(scope, now, expires_at)
 
         with session_scope(self.engine) as session:
             row, _ = AgentLearningMemoryRepository(session).get_or_create_active(
@@ -305,10 +339,10 @@ class LearningMemoryService:
                 evidence_payload=evidence_payload,
                 confidence=_decimal(confidence),
                 importance=_decimal(importance),
-                now=_utcnow(),
+                now=now,
                 symbol=symbol,
                 strategy_skill_id=strategy_skill_id,
-                expires_at=expires_at,
+                expires_at=resolved_expires_at,
                 created_by=created_by,
             )
             return _to_payload(row)
@@ -333,6 +367,18 @@ def _to_payload(row: AgentLearningMemoryORM) -> MemoryPayload:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _default_expires_at(
+    scope: str,
+    now: datetime,
+    expires_at: datetime | None,
+) -> datetime | None:
+    if expires_at is not None:
+        return expires_at
+    if scope == "symbol":
+        return now + timedelta(days=DEFAULT_SYMBOL_MEMORY_EXPIRY_DAYS)
+    return None
 
 
 def _ensure_safe_memory_text(title: str, content: str) -> None:

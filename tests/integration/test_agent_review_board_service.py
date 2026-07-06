@@ -2,6 +2,7 @@ from datetime import date, datetime
 import json
 
 from quant_trading.agents import review_board
+from quant_trading.agents.memory import LearningMemoryService
 from quant_trading.agents.review_board import ReviewBoardService
 from quant_trading.config import AppSettings
 from quant_trading.storage.db import create_all, make_engine, session_scope
@@ -102,6 +103,36 @@ def test_review_board_persists_vote_for_non_object_candidate_payload():
         )
         assert strategy_vote.vote == "needs_review"
         assert strategy_vote.reason_code == "strategy_payload_invalid"
+
+
+def test_review_board_memory_lineage_includes_low_confidence_active_memories():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id = seed_candidate_review_with_validation_report(
+        engine,
+        validation_status="passed",
+        readiness_floor="ready_for_paper_research",
+        data_quality_status="passed",
+    )
+    low_confidence = LearningMemoryService(engine).create_manual_memory(
+        memory_type="strategy_failure",
+        scope="symbol",
+        title="low confidence audit memory",
+        content="Keep this memory visible in board audit lineage.",
+        reason_code="low_confidence_lineage",
+        operator="tester",
+        source_id=51,
+        symbol="000001",
+        confidence="0.39",
+    )
+
+    ReviewBoardService(engine).run_for_candidate_review(candidate_review_id)
+
+    with session_scope(engine) as session:
+        board_run = AgentReviewBoardRunRepository(session).list_recent(limit=1)[0]
+        memory_ids = json.loads(board_run.memory_ids_payload)
+
+    assert low_confidence.id in memory_ids
 
 
 def test_review_board_validation_reviewer_caps_running_validation():

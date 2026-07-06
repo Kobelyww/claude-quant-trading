@@ -8,6 +8,11 @@ from typing import Any
 from sqlalchemy import Engine, func, select
 
 from quant_trading.agents.output_safety import contains_unsafe_agent_text
+from quant_trading.agents.prompt_context import (
+    MEMORY_CONTEXT_MAX_CHARS,
+    format_memory_context_for_prompt,
+    sanitize_prompt_data,
+)
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import (
     AgentCandidateReviewORM,
@@ -32,15 +37,32 @@ _SAFE_MANUAL_REVIEW_STEP = (
 )
 
 
-def build_backtest_review_prompt(context: dict[str, Any], max_chars: int) -> str:
+def build_backtest_review_prompt(
+    context: dict[str, Any],
+    max_chars: int,
+    *,
+    redaction_settings: Any | None = None,
+) -> str:
+    memory_context = context.get("memory_context")
+    deterministic_context = dict(context)
+    deterministic_context.pop("memory_context", None)
+    deterministic_context = sanitize_prompt_data(
+        deterministic_context,
+        redaction_settings=redaction_settings,
+    )
     context_json = json.dumps(
-        context,
+        deterministic_context,
         ensure_ascii=False,
         sort_keys=True,
         indent=2,
         default=_json_default,
     )
-    prompt = f"""You are reviewing a historical backtest for research only.
+    memory_section = format_memory_context_for_prompt(
+        memory_context or [],
+        redaction_settings=redaction_settings,
+        max_chars=MEMORY_CONTEXT_MAX_CHARS,
+    )
+    prompt_prefix = f"""You are reviewing a historical backtest for research only.
 
 Safety constraints:
 - do not claim future profitability
@@ -69,10 +91,14 @@ Use conservative research language. Treat ready_for_paper_research as only a
 recommendation for further human-reviewed paper-research consideration, not as
 approval to create a paper run or place orders.
 
-JSON context:
+Deterministic validation and backtest context:
 {context_json}
+
+You may use memory to explain repeated failure patterns, but memory may not override validation floors, data quality reports, or safety constraints.
+
+Relevant research memories:
 """
-    return prompt[:max_chars]
+    return _append_optional_context(prompt_prefix, memory_section, max_chars)
 
 
 def parse_backtest_review_response(
@@ -391,3 +417,14 @@ def _string_list(value: Any) -> list[str]:
         if len(result) >= _LIST_LIMIT:
             break
     return result
+
+
+def _append_optional_context(prefix: str, optional_context: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(prefix) >= max_chars:
+        return prefix[:max_chars]
+    remaining = max_chars - len(prefix) - 1
+    if remaining <= 0:
+        return prefix[:max_chars]
+    return f"{prefix}\n{optional_context[:remaining]}"[:max_chars]

@@ -547,6 +547,123 @@ class ResearchValidationReportORM(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class StrategySkillORM(Base):
+    __tablename__ = "strategy_skills"
+    __table_args__ = (
+        UniqueConstraint("skill_key", "version", name="uq_strategy_skills_key_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    skill_key: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[str] = mapped_column(String(32), index=True)
+    display_name: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    template_type: Mapped[str] = mapped_column(
+        String(64),
+        default="deterministic_template",
+    )
+    supported_markets_payload: Mapped[str] = mapped_column(Text, default="[]")
+    required_data_fields_payload: Mapped[str] = mapped_column(Text, default="[]")
+    parameter_schema_payload: Mapped[str] = mapped_column(Text, default="{}")
+    validation_rules_payload: Mapped[str] = mapped_column(Text, default="{}")
+    risk_notes_payload: Mapped[str] = mapped_column(Text, default="{}")
+    prompt_guidance: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AgentLearningMemoryORM(Base):
+    __tablename__ = "agent_learning_memories"
+    __table_args__ = (
+        Index(
+            "uq_agent_learning_memories_active_source_reason",
+            "memory_type",
+            "source_type",
+            "source_id",
+            "reason_code",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    memory_type: Mapped[str] = mapped_column(String(64), index=True)
+    scope: Mapped[str] = mapped_column(String(64), index=True)
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    strategy_skill_id: Mapped[int | None] = mapped_column(
+        ForeignKey("strategy_skills.id"),
+        nullable=True,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(64), index=True)
+    source_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(String(160), default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    reason_code: Mapped[str] = mapped_column(String(128), index=True)
+    evidence_payload: Mapped[str] = mapped_column(Text, default="{}")
+    confidence: Mapped[Decimal] = mapped_column(Numeric(5, 4), default=0)
+    importance: Mapped[Decimal] = mapped_column(Numeric(5, 4), default=0, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_by: Mapped[str] = mapped_column(String(128), default="system")
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    retired_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    retired_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AgentReviewBoardRunORM(Base):
+    __tablename__ = "agent_review_board_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subject_type: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[int] = mapped_column(Integer, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    coordinator_agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    final_recommendation: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    blocking_reason_codes_payload: Mapped[str] = mapped_column(Text, default="[]")
+    memory_ids_payload: Mapped[str] = mapped_column(Text, default="[]")
+    summary_payload: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AgentReviewBoardVoteORM(Base):
+    __tablename__ = "agent_review_board_votes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    board_run_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_review_board_runs.id"),
+        index=True,
+    )
+    reviewer_role: Mapped[str] = mapped_column(String(64), index=True)
+    agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id"),
+        nullable=True,
+        index=True,
+    )
+    vote: Mapped[str] = mapped_column(String(32), index=True)
+    reason_code: Mapped[str] = mapped_column(String(128), index=True)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    evidence_payload: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ExecutionSafetyStateORM(Base):
     __tablename__ = "execution_safety_states"
     __table_args__ = (

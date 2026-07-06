@@ -424,6 +424,97 @@ def _assert_pre_live_safety_ops_schema(inspector) -> None:
     assert event_indexes["ix_kill_switch_events_created_at"] == ("created_at",)
 
 
+def _assert_agent_intelligence_schema(inspector) -> None:
+    tables = set(inspector.get_table_names())
+    assert {
+        "strategy_skills",
+        "agent_learning_memories",
+        "agent_review_board_runs",
+        "agent_review_board_votes",
+    } <= tables
+
+    skill_columns = _columns(inspector, "strategy_skills")
+    assert {
+        "id",
+        "skill_key",
+        "version",
+        "display_name",
+        "description",
+        "status",
+        "template_type",
+        "supported_markets_payload",
+        "required_data_fields_payload",
+        "parameter_schema_payload",
+        "validation_rules_payload",
+        "risk_notes_payload",
+        "prompt_guidance",
+        "created_at",
+        "updated_at",
+    } <= set(skill_columns)
+    assert skill_columns["skill_key"]["nullable"] is False
+    assert skill_columns["version"]["nullable"] is False
+    skill_uniques = _unique_columns(inspector, "strategy_skills")
+    assert skill_uniques["uq_strategy_skills_key_version"] == (
+        "skill_key",
+        "version",
+    )
+
+    memory_columns = _columns(inspector, "agent_learning_memories")
+    assert {
+        "id",
+        "memory_type",
+        "scope",
+        "symbol",
+        "strategy_skill_id",
+        "source_type",
+        "source_id",
+        "title",
+        "content",
+        "reason_code",
+        "evidence_payload",
+        "confidence",
+        "importance",
+        "status",
+        "expires_at",
+        "created_at",
+        "created_by",
+        "retired_at",
+        "retired_by",
+        "retired_reason",
+    } <= set(memory_columns)
+    assert memory_columns["memory_type"]["nullable"] is False
+    assert memory_columns["source_id"]["nullable"] is False
+
+    board_columns = _columns(inspector, "agent_review_board_runs")
+    assert {
+        "id",
+        "subject_type",
+        "subject_id",
+        "status",
+        "coordinator_agent_run_id",
+        "final_recommendation",
+        "blocking_reason_codes_payload",
+        "memory_ids_payload",
+        "summary_payload",
+        "created_at",
+        "finished_at",
+        "duration_ms",
+    } <= set(board_columns)
+
+    vote_columns = _columns(inspector, "agent_review_board_votes")
+    assert {
+        "id",
+        "board_run_id",
+        "reviewer_role",
+        "agent_run_id",
+        "vote",
+        "reason_code",
+        "rationale",
+        "evidence_payload",
+        "created_at",
+    } <= set(vote_columns)
+
+
 def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch):
     db_path = tmp_path / "runtime.sqlite3"
     database_url = f"sqlite+pysqlite:///{db_path}"
@@ -474,6 +565,7 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
 
     _assert_validation_report_schema(inspector)
     _assert_pre_live_safety_ops_schema(inspector)
+    _assert_agent_intelligence_schema(inspector)
 
     engine = create_engine(database_url, future=True)
     with engine.connect() as connection:
@@ -491,8 +583,15 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
                 "and name = 'uq_operator_approval_requests_pending_resource'"
             )
         ).scalar_one()
+        ma_cross_seed = connection.execute(
+            text(
+                "select skill_key, version, status "
+                "from strategy_skills where skill_key = 'ma_cross'"
+            )
+        ).one()
     assert tuple(row) == ("global", False, True, True, False)
     assert "WHERE status = 'pending'" in partial_index_sql
+    assert tuple(ma_cross_seed) == ("ma_cross", "1.0.0", "active")
 
 
 def test_validation_report_migration_downgrade_and_reupgrade(
@@ -506,6 +605,7 @@ def test_validation_report_migration_downgrade_and_reupgrade(
     command.upgrade(config, "head")
     _assert_validation_report_schema(_inspector(database_url))
     _assert_pre_live_safety_ops_schema(_inspector(database_url))
+    _assert_agent_intelligence_schema(_inspector(database_url))
 
     command.downgrade(config, "20260624_0008")
     downgraded_inspector = _inspector(database_url)
@@ -518,6 +618,10 @@ def test_validation_report_migration_downgrade_and_reupgrade(
     assert "operator_approval_requests" not in downgraded_tables
     assert "safety_incidents" not in downgraded_tables
     assert "kill_switch_events" not in downgraded_tables
+    assert "strategy_skills" not in downgraded_tables
+    assert "agent_learning_memories" not in downgraded_tables
+    assert "agent_review_board_runs" not in downgraded_tables
+    assert "agent_review_board_votes" not in downgraded_tables
     downgraded_candidate_columns = _columns(
         downgraded_inspector, "agent_candidate_reviews"
     )
@@ -531,3 +635,4 @@ def test_validation_report_migration_downgrade_and_reupgrade(
     assert "research_validation_reports" in reupgraded_tables
     _assert_validation_report_schema(reupgraded_inspector)
     _assert_pre_live_safety_ops_schema(reupgraded_inspector)
+    _assert_agent_intelligence_schema(reupgraded_inspector)

@@ -3,7 +3,7 @@ from decimal import Decimal
 import hashlib
 import json
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import case, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,9 @@ from quant_trading.core.models import Bar
 from quant_trading.execution.broker import BrokerOrderRequest, BrokerOrderResult
 from quant_trading.storage.models import (
     AgentCandidateReviewORM,
+    AgentLearningMemoryORM,
+    AgentReviewBoardRunORM,
+    AgentReviewBoardVoteORM,
     AgentRunORM,
     BrokerOrderEventORM,
     DataQualityReportORM,
@@ -28,6 +31,7 @@ from quant_trading.storage.models import (
     OperatorApprovalRequestORM,
     ResearchValidationReportORM,
     SafetyIncidentORM,
+    StrategySkillORM,
     WorkflowRunORM,
 )
 
@@ -207,6 +211,16 @@ def _ops_json_dumps(value: dict, limit: int = _OPS_PAYLOAD_MAX_LENGTH) -> str:
     if len(bounded_dumped) <= limit:
         return bounded_dumped
     return _json_dumps({"truncated": True, "truncated_marker": _TRUNCATED})[:limit]
+
+
+def _agent_json_dumps(payload: dict | list) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    )
 
 
 def _broker_request_payload(request: BrokerOrderRequest) -> dict:
@@ -1443,6 +1457,339 @@ class ResearchValidationReportRepository:
             select(ResearchValidationReportORM).where(
                 ResearchValidationReportORM.candidate_review_id == candidate_review_id
             )
+        )
+
+
+MA_CROSS_SKILL = {
+    "skill_key": "ma_cross",
+    "version": "1.0.0",
+    "display_name": "MA Cross",
+    "description": "Deterministic moving-average crossover research template.",
+    "status": "active",
+    "template_type": "deterministic_template",
+    "supported_markets_payload": '["A_STOCK"]',
+    "required_data_fields_payload": '["open","high","low","close","volume","timestamp","symbol"]',
+    "parameter_schema_payload": '{"short_window":{"type":"positive_int"},"long_window":{"type":"positive_int_gt_short_window"},"order_size":{"type":"positive_int"},"initial_cash":{"type":"positive_decimal_string"}}',
+    "validation_rules_payload": '{"no_generated_code":true,"no_live_trading_recommendation":true,"readiness_floor_caps_review":true}',
+    "risk_notes_payload": '{"template_risks":["trend-following lag","sideways whipsaw","parameter overfit"]}',
+    "prompt_guidance": "Use only for deterministic moving-average crossover research. Do not output executable code or trading instructions.",
+}
+
+
+class StrategySkillRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def ensure_seeded(self, now: datetime) -> StrategySkillORM:
+        row = self.session.scalar(
+            select(StrategySkillORM).where(
+                StrategySkillORM.skill_key == MA_CROSS_SKILL["skill_key"],
+                StrategySkillORM.version == MA_CROSS_SKILL["version"],
+            )
+        )
+        if row is None:
+            row = StrategySkillORM(created_at=now)
+            self.session.add(row)
+
+        for key, value in MA_CROSS_SKILL.items():
+            setattr(row, key, value)
+        row.updated_at = now
+        self.session.flush()
+        return row
+
+    def get_active(self, skill_key: str) -> StrategySkillORM | None:
+        return self.session.scalar(
+            select(StrategySkillORM)
+            .where(
+                StrategySkillORM.skill_key == skill_key,
+                StrategySkillORM.status == "active",
+            )
+            .order_by(StrategySkillORM.updated_at.desc(), StrategySkillORM.id.desc())
+        )
+
+    def list_active(self, limit: int = 50) -> list[StrategySkillORM]:
+        return list(
+            self.session.scalars(
+                select(StrategySkillORM)
+                .where(StrategySkillORM.status == "active")
+                .order_by(StrategySkillORM.skill_key.asc(), StrategySkillORM.id.asc())
+                .limit(limit)
+            ).all()
+        )
+
+
+class AgentLearningMemoryRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get(self, memory_id: int) -> AgentLearningMemoryORM | None:
+        return self.session.get(AgentLearningMemoryORM, memory_id)
+
+    def get_or_create_active(
+        self,
+        memory_type: str,
+        scope: str,
+        source_type: str,
+        source_id: int,
+        reason_code: str,
+        title: str,
+        content: str,
+        evidence_payload: dict,
+        confidence: Decimal,
+        importance: Decimal,
+        now: datetime,
+        symbol: str | None = None,
+        strategy_skill_id: int | None = None,
+        expires_at: datetime | None = None,
+        created_by: str = "system",
+    ) -> tuple[AgentLearningMemoryORM, bool]:
+        existing = self.session.scalar(
+            select(AgentLearningMemoryORM).where(
+                AgentLearningMemoryORM.memory_type == memory_type,
+                AgentLearningMemoryORM.source_type == source_type,
+                AgentLearningMemoryORM.source_id == source_id,
+                AgentLearningMemoryORM.reason_code == reason_code,
+                AgentLearningMemoryORM.status == "active",
+            )
+        )
+        if existing is not None:
+            return existing, False
+
+        row = AgentLearningMemoryORM(
+            memory_type=_cap_text(memory_type, 64),
+            scope=_cap_text(scope, 64),
+            symbol=_cap_text(symbol, 32) if symbol is not None else None,
+            strategy_skill_id=strategy_skill_id,
+            source_type=_cap_text(source_type, 64),
+            source_id=source_id,
+            title=_cap_text(title, 160),
+            content=_cap_text(content, 4000),
+            reason_code=_cap_text(reason_code, 128),
+            evidence_payload=_ops_json_dumps(evidence_payload, limit=12000),
+            confidence=confidence,
+            importance=importance,
+            status="active",
+            expires_at=expires_at,
+            created_at=now,
+            created_by=_cap_text(created_by, 128),
+        )
+        try:
+            with self.session.begin_nested():
+                self.session.add(row)
+                self.session.flush()
+            return row, True
+        except IntegrityError:
+            existing = self.session.scalar(
+                select(AgentLearningMemoryORM).where(
+                    AgentLearningMemoryORM.memory_type == memory_type,
+                    AgentLearningMemoryORM.source_type == source_type,
+                    AgentLearningMemoryORM.source_id == source_id,
+                    AgentLearningMemoryORM.reason_code == reason_code,
+                    AgentLearningMemoryORM.status == "active",
+                )
+            )
+            if existing is None:
+                raise
+            return existing, False
+
+    def list_active(
+        self,
+        symbol: str | None = None,
+        strategy_skill_id: int | None = None,
+        memory_types: list[str] | None = None,
+        limit: int = 50,
+        now: datetime | None = None,
+    ) -> list[AgentLearningMemoryORM]:
+        statement = select(AgentLearningMemoryORM).where(
+            AgentLearningMemoryORM.status == "active"
+        )
+        if now is not None:
+            statement = statement.where(
+                or_(
+                    AgentLearningMemoryORM.expires_at.is_(None),
+                    AgentLearningMemoryORM.expires_at > now,
+                )
+            )
+        if symbol is not None:
+            statement = statement.where(
+                or_(
+                    AgentLearningMemoryORM.symbol.is_(None),
+                    AgentLearningMemoryORM.symbol == symbol,
+                )
+            )
+        if strategy_skill_id is not None:
+            statement = statement.where(
+                or_(
+                    AgentLearningMemoryORM.strategy_skill_id.is_(None),
+                    AgentLearningMemoryORM.strategy_skill_id == strategy_skill_id,
+                )
+            )
+        if memory_types:
+            statement = statement.where(AgentLearningMemoryORM.memory_type.in_(memory_types))
+
+        rank_terms = []
+        if symbol is not None:
+            rank_terms.append(case((AgentLearningMemoryORM.symbol == symbol, 1), else_=0))
+        if strategy_skill_id is not None:
+            rank_terms.append(
+                case(
+                    (AgentLearningMemoryORM.strategy_skill_id == strategy_skill_id, 1),
+                    else_=0,
+                )
+            )
+        rank_expression = None
+        for term in rank_terms:
+            rank_expression = term if rank_expression is None else rank_expression + term
+        order_by = [
+            AgentLearningMemoryORM.importance.desc(),
+            AgentLearningMemoryORM.created_at.desc(),
+            AgentLearningMemoryORM.id.desc(),
+        ]
+        if rank_expression is not None:
+            order_by.insert(0, rank_expression.desc())
+        return list(
+            self.session.scalars(
+                statement.order_by(*order_by).limit(limit)
+            ).all()
+        )
+
+    def retire(
+        self,
+        memory_id: int,
+        retired_by: str,
+        retired_reason: str,
+        now: datetime,
+    ) -> AgentLearningMemoryORM:
+        row = self.get(memory_id)
+        if row is None:
+            raise ValueError(f"agent learning memory not found: {memory_id}")
+        row.status = "retired"
+        row.retired_by = _cap_text(retired_by, 128)
+        row.retired_reason = _cap_text(retired_reason, 1000)
+        row.retired_at = now
+        self.session.flush()
+        return row
+
+
+class AgentReviewBoardRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_running(
+        self,
+        subject_type: str,
+        subject_id: int,
+        memory_ids: list[int],
+        now: datetime,
+    ) -> AgentReviewBoardRunORM:
+        row = AgentReviewBoardRunORM(
+            subject_type=_cap_text(subject_type, 64),
+            subject_id=subject_id,
+            status="running",
+            blocking_reason_codes_payload="[]",
+            memory_ids_payload=_agent_json_dumps(memory_ids),
+            summary_payload="{}",
+            created_at=now,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def mark_completed(
+        self,
+        board_run_id: int,
+        final_recommendation: str,
+        blocking_reason_codes: list[str],
+        summary_payload: dict,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> AgentReviewBoardRunORM:
+        row = self.get(board_run_id)
+        if row is None:
+            raise ValueError(f"agent review board run not found: {board_run_id}")
+        row.status = "completed"
+        row.final_recommendation = _cap_text(final_recommendation, 64)
+        row.blocking_reason_codes_payload = _agent_json_dumps(blocking_reason_codes)
+        row.summary_payload = _ops_json_dumps(summary_payload, limit=12000)
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def mark_failed(
+        self,
+        board_run_id: int,
+        error_message: str,
+        finished_at: datetime,
+        duration_ms: int,
+    ) -> AgentReviewBoardRunORM:
+        row = self.get(board_run_id)
+        if row is None:
+            raise ValueError(f"agent review board run not found: {board_run_id}")
+        row.status = "failed"
+        row.final_recommendation = None
+        row.blocking_reason_codes_payload = _agent_json_dumps(["review_board_failed"])
+        row.summary_payload = _ops_json_dumps(
+            {"error_message": _cap_text(error_message, 1000)},
+            limit=12000,
+        )
+        row.finished_at = finished_at
+        row.duration_ms = duration_ms
+        self.session.flush()
+        return row
+
+    def list_recent(self, limit: int = 50) -> list[AgentReviewBoardRunORM]:
+        return list(
+            self.session.scalars(
+                select(AgentReviewBoardRunORM)
+                .order_by(AgentReviewBoardRunORM.id.desc())
+                .limit(limit)
+            ).all()
+        )
+
+    def get(self, run_id: int) -> AgentReviewBoardRunORM | None:
+        return self.session.get(AgentReviewBoardRunORM, run_id)
+
+
+class AgentReviewBoardVoteRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(
+        self,
+        board_run_id: int,
+        reviewer_role: str,
+        vote: str,
+        reason_code: str,
+        rationale: str,
+        evidence_payload: dict,
+        now: datetime,
+        agent_run_id: int | None = None,
+    ) -> AgentReviewBoardVoteORM:
+        row = AgentReviewBoardVoteORM(
+            board_run_id=board_run_id,
+            reviewer_role=_cap_text(reviewer_role, 64),
+            agent_run_id=agent_run_id,
+            vote=_cap_text(vote, 32),
+            reason_code=_cap_text(reason_code, 128),
+            rationale=_cap_text(rationale, 2000),
+            evidence_payload=_ops_json_dumps(evidence_payload, limit=12000),
+            created_at=now,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_for_board(self, board_run_id: int) -> list[AgentReviewBoardVoteORM]:
+        return list(
+            self.session.scalars(
+                select(AgentReviewBoardVoteORM)
+                .where(AgentReviewBoardVoteORM.board_run_id == board_run_id)
+                .order_by(
+                    AgentReviewBoardVoteORM.created_at.asc(),
+                    AgentReviewBoardVoteORM.id.asc(),
+                )
+            ).all()
         )
 
 

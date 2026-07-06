@@ -64,11 +64,13 @@ def test_strategy_skill_repository_seeds_and_lists_ma_cross():
 
     with session_scope(engine) as session:
         repo = StrategySkillRepository(session)
-        repo.ensure_seeded(now)
+        first_seed = repo.ensure_seeded(now)
+        second_seed = repo.ensure_seeded(now + timedelta(minutes=1))
         skill = repo.get_active("ma_cross")
         active_skills = repo.list_active()
 
         assert skill is not None
+        assert second_seed.id == first_seed.id
         assert skill.version == "1.0.0"
         assert skill.status == "active"
         assert [row.skill_key for row in active_skills].count("ma_cross") == 1
@@ -137,6 +139,50 @@ def test_learning_memory_repository_creates_reuses_and_retires_active_memory():
         assert new_created is True
         assert new_row.id != row.id
         assert new_row.status == "active"
+
+
+def test_learning_memory_repository_reuses_overlong_capped_identity_fields():
+    engine = make_engine_with_schema()
+    now = datetime(2026, 7, 6, 9, 0, 0)
+    memory_type = "strategy_failure_" + ("x" * 80)
+    source_type = "research_validation_report_" + ("y" * 80)
+    reason_code = "parameter_overfit_" + ("z" * 160)
+
+    with session_scope(engine) as session:
+        repo = AgentLearningMemoryRepository(session)
+        row, created = repo.get_or_create_active(
+            memory_type=memory_type,
+            scope="global",
+            source_type=source_type,
+            source_id=123,
+            reason_code=reason_code,
+            title="Overlong identity",
+            content="Overlong identity fields should be canonicalized.",
+            evidence_payload={"source_id": 123},
+            confidence=Decimal("0.8"),
+            importance=Decimal("0.7"),
+            now=now,
+        )
+        same_row, same_created = repo.get_or_create_active(
+            memory_type=memory_type,
+            scope="global",
+            source_type=source_type,
+            source_id=123,
+            reason_code=reason_code,
+            title="Overlong identity duplicate",
+            content="Repeated overlong identity values should reuse the row.",
+            evidence_payload={"source_id": 123, "duplicate": True},
+            confidence=Decimal("0.4"),
+            importance=Decimal("0.3"),
+            now=now + timedelta(minutes=1),
+        )
+
+        assert created is True
+        assert same_created is False
+        assert same_row.id == row.id
+        assert same_row.memory_type == memory_type[:64]
+        assert same_row.source_type == source_type[:64]
+        assert same_row.reason_code == reason_code[:128]
 
 
 def test_learning_memory_repository_retrieves_symbol_and_skill_scoped_memories_first():

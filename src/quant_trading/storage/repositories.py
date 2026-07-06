@@ -1480,22 +1480,41 @@ class StrategySkillRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def ensure_seeded(self, now: datetime) -> StrategySkillORM:
-        row = self.session.scalar(
+    def _get_ma_cross_seed(self) -> StrategySkillORM | None:
+        return self.session.scalar(
             select(StrategySkillORM).where(
                 StrategySkillORM.skill_key == MA_CROSS_SKILL["skill_key"],
                 StrategySkillORM.version == MA_CROSS_SKILL["version"],
             )
         )
-        if row is None:
-            row = StrategySkillORM(created_at=now)
-            self.session.add(row)
 
+    def _apply_ma_cross_seed(self, row: StrategySkillORM, now: datetime) -> None:
         for key, value in MA_CROSS_SKILL.items():
             setattr(row, key, value)
         row.updated_at = now
-        self.session.flush()
-        return row
+
+    def ensure_seeded(self, now: datetime) -> StrategySkillORM:
+        row = self._get_ma_cross_seed()
+        if row is not None:
+            self._apply_ma_cross_seed(row, now)
+            self.session.flush()
+            return row
+
+        row = StrategySkillORM(created_at=now)
+        self._apply_ma_cross_seed(row, now)
+        try:
+            with self.session.begin_nested():
+                self.session.add(row)
+                self.session.flush()
+            return row
+        except IntegrityError:
+            # Another seeder may have won the unique-key race; reuse that row.
+            row = self._get_ma_cross_seed()
+            if row is None:
+                raise
+            self._apply_ma_cross_seed(row, now)
+            self.session.flush()
+            return row
 
     def get_active(self, skill_key: str) -> StrategySkillORM | None:
         return self.session.scalar(
@@ -1543,12 +1562,15 @@ class AgentLearningMemoryRepository:
         expires_at: datetime | None = None,
         created_by: str = "system",
     ) -> tuple[AgentLearningMemoryORM, bool]:
+        memory_type_key = _cap_text(memory_type, 64)
+        source_type_key = _cap_text(source_type, 64)
+        reason_code_key = _cap_text(reason_code, 128)
         existing = self.session.scalar(
             select(AgentLearningMemoryORM).where(
-                AgentLearningMemoryORM.memory_type == memory_type,
-                AgentLearningMemoryORM.source_type == source_type,
+                AgentLearningMemoryORM.memory_type == memory_type_key,
+                AgentLearningMemoryORM.source_type == source_type_key,
                 AgentLearningMemoryORM.source_id == source_id,
-                AgentLearningMemoryORM.reason_code == reason_code,
+                AgentLearningMemoryORM.reason_code == reason_code_key,
                 AgentLearningMemoryORM.status == "active",
             )
         )
@@ -1556,15 +1578,15 @@ class AgentLearningMemoryRepository:
             return existing, False
 
         row = AgentLearningMemoryORM(
-            memory_type=_cap_text(memory_type, 64),
+            memory_type=memory_type_key,
             scope=_cap_text(scope, 64),
             symbol=_cap_text(symbol, 32) if symbol is not None else None,
             strategy_skill_id=strategy_skill_id,
-            source_type=_cap_text(source_type, 64),
+            source_type=source_type_key,
             source_id=source_id,
             title=_cap_text(title, 160),
             content=_cap_text(content, 4000),
-            reason_code=_cap_text(reason_code, 128),
+            reason_code=reason_code_key,
             evidence_payload=_ops_json_dumps(evidence_payload, limit=12000),
             confidence=confidence,
             importance=importance,
@@ -1581,10 +1603,10 @@ class AgentLearningMemoryRepository:
         except IntegrityError:
             existing = self.session.scalar(
                 select(AgentLearningMemoryORM).where(
-                    AgentLearningMemoryORM.memory_type == memory_type,
-                    AgentLearningMemoryORM.source_type == source_type,
+                    AgentLearningMemoryORM.memory_type == memory_type_key,
+                    AgentLearningMemoryORM.source_type == source_type_key,
                     AgentLearningMemoryORM.source_id == source_id,
-                    AgentLearningMemoryORM.reason_code == reason_code,
+                    AgentLearningMemoryORM.reason_code == reason_code_key,
                     AgentLearningMemoryORM.status == "active",
                 )
             )

@@ -209,6 +209,29 @@ def test_memory_service_extracts_validation_report_failure_and_success(in_memory
     assert passed_results[0].importance == Decimal("0.5000")
 
 
+def test_memory_service_extracts_needs_review_validation_report_as_failure(
+    in_memory_engine,
+):
+    report = _create_validation_report(
+        in_memory_engine,
+        validation_status="needs_review",
+        readiness_floor="needs_review",
+        summary_payload={"reasons": [{"code": "review_required"}]},
+        source_agent_run_id=104,
+        candidate_source_id=204,
+        backtest_id=304,
+    )
+    service = LearningMemoryService(in_memory_engine)
+
+    results = service.extract_from_validation_report(report.id)
+
+    assert [(row.memory_type, row.reason_code) for row in results] == [
+        ("strategy_failure", "review_required")
+    ]
+    assert results[0].confidence == Decimal("0.9000")
+    assert results[0].importance == Decimal("0.7000")
+
+
 def test_memory_service_ignores_running_validation_reports(in_memory_engine):
     running = _create_validation_report(
         in_memory_engine,
@@ -222,6 +245,23 @@ def test_memory_service_ignores_running_validation_reports(in_memory_engine):
     service = LearningMemoryService(in_memory_engine)
 
     assert service.extract_from_validation_report(running.id) == []
+
+
+def test_memory_service_ignores_unknown_in_progress_validation_status(
+    in_memory_engine,
+):
+    report = _create_validation_report(
+        in_memory_engine,
+        validation_status="in_progress_manual_check",
+        readiness_floor="needs_review",
+        summary_payload={"reasons": [{"code": "manual_check_pending"}]},
+        source_agent_run_id=105,
+        candidate_source_id=205,
+        backtest_id=305,
+    )
+    service = LearningMemoryService(in_memory_engine)
+
+    assert service.extract_from_validation_report(report.id) == []
 
 
 def test_memory_service_retrieves_by_scope_budget_and_retires(in_memory_engine):

@@ -13,7 +13,6 @@ from quant_trading.agents.backtest_review import (
     load_backtest_review_context,
     parse_backtest_review_response,
 )
-from quant_trading.agents.candidates import validate_strategy_candidate
 from quant_trading.agents.llm import DeepSeekLLMClient, LLMClient
 from quant_trading.agents.market_analysis import build_market_analysis_prompt, compute_market_metrics
 from quant_trading.agents.models import (
@@ -32,6 +31,7 @@ from quant_trading.agents.strategy_idea import (
     build_strategy_idea_prompt,
     parse_strategy_idea_response,
 )
+from quant_trading.agents.skills import StrategySkillRegistry
 from quant_trading.config import AppSettings
 from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import session_scope
@@ -39,6 +39,7 @@ from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
     AgentRunRepository,
     MarketDataRepository,
+    StrategySkillRepository,
 )
 from quant_trading.validation.metrics import cap_readiness
 
@@ -172,8 +173,10 @@ def run_strategy_idea_agent(
             response.content[: settings.agent_result_max_chars]
         )
         if parsed_payload["parsed"]:
-            validation_payload = validate_strategy_candidate(
-                parsed_payload["spec"], request_symbol=clean_request.symbol
+            validation_payload = _validate_strategy_candidate_with_registry(
+                engine,
+                parsed_payload,
+                clean_request,
             )
         else:
             validation_payload = {
@@ -217,6 +220,21 @@ def run_strategy_idea_agent(
                     duration_ms=_duration_ms(started_counter),
                 )
         raise
+
+
+def _validate_strategy_candidate_with_registry(
+    engine: Engine,
+    parsed_payload: dict[str, Any],
+    clean_request: StrategyIdeaRequest,
+) -> dict[str, Any]:
+    with session_scope(engine) as session:
+        skill_repo = StrategySkillRepository(session)
+        skill_repo.ensure_seeded(_utcnow())
+        registry = StrategySkillRegistry.from_repository(skill_repo)
+        return registry.validate_candidate(
+            parsed_payload["spec"],
+            request_symbol=clean_request.symbol,
+        ).to_result_payload()
 
 
 def run_backtest_review_agent(

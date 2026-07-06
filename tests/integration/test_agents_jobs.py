@@ -116,6 +116,8 @@ def test_run_strategy_idea_agent_persists_success():
     assert result["safety_flags"] == []
     assert result["candidate_payload"] == {
         "strategy_name": "ma_cross",
+        "strategy_skill_key": "ma_cross",
+        "strategy_skill_version": "1.0.0",
         "symbol": "000001",
         "parameters": {
             "short_window": 5,

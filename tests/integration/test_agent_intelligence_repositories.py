@@ -120,6 +120,15 @@ def test_learning_memory_repository_creates_reuses_and_retires_active_memory():
             retired_reason="superseded",
             now=now + timedelta(minutes=2),
         )
+        first_retired_by = retired.retired_by
+        first_retired_reason = retired.retired_reason
+        first_retired_at = retired.retired_at
+        retry_retired = repo.retire(
+            row.id,
+            retired_by="retry-operator",
+            retired_reason="retry should not rewrite retirement metadata",
+            now=now + timedelta(minutes=4),
+        )
         new_row, new_created = repo.get_or_create_active(
             memory_type="operator_decision",
             scope="global",
@@ -136,6 +145,10 @@ def test_learning_memory_repository_creates_reuses_and_retires_active_memory():
 
         assert retired.status == "retired"
         assert retired.retired_by == "operator"
+        assert retry_retired.status == "retired"
+        assert retry_retired.retired_by == first_retired_by
+        assert retry_retired.retired_reason == first_retired_reason
+        assert retry_retired.retired_at == first_retired_at
         assert new_created is True
         assert new_row.id != row.id
         assert new_row.status == "active"

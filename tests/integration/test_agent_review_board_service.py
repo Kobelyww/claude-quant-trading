@@ -1,7 +1,9 @@
 from datetime import date, datetime
 import json
 
+from quant_trading.agents import review_board
 from quant_trading.agents.review_board import ReviewBoardService
+from quant_trading.config import AppSettings
 from quant_trading.storage.db import create_all, make_engine, session_scope
 from quant_trading.storage.models import (
     BacktestRunORM,
@@ -123,6 +125,40 @@ def test_review_board_validation_reviewer_caps_running_validation():
         )
         assert validation_vote.vote == "needs_review"
         assert validation_vote.reason_code == "validation_unknown_or_in_progress"
+
+
+def test_review_board_service_redacts_settings_secret_in_failed_run_summary(monkeypatch):
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    secret = "configured-token-456"
+    candidate_review_id = seed_candidate_review_with_validation_report(
+        engine,
+        validation_status="needs_review",
+        readiness_floor="not_ready",
+        data_quality_status="passed",
+    )
+
+    def fail_votes(**_: object) -> None:
+        raise RuntimeError(f"reviewer failed with {secret}")
+
+    monkeypatch.setattr(review_board, "_deterministic_votes", fail_votes)
+
+    try:
+        ReviewBoardService(
+            engine,
+            settings=AppSettings(api_token=secret),
+        ).run_for_candidate_review(candidate_review_id)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected review board failure")
+
+    with session_scope(engine) as session:
+        board_run = AgentReviewBoardRunRepository(session).list_recent(limit=1)[0]
+        summary = json.loads(board_run.summary_payload)
+        assert board_run.status == "failed"
+        assert secret not in summary["error_message"]
+        assert "[REDACTED]" in summary["error_message"]
 
 
 def seed_candidate_review_with_validation_report(

@@ -1,11 +1,13 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from quant_trading.agents.memory import LearningMemoryService
+from quant_trading.agents.review_board import ReviewBoardService
 from quant_trading.api.main import create_app
 from quant_trading.config import AppSettings
 from quant_trading.storage.db import create_all, make_engine, session_scope
@@ -19,6 +21,7 @@ from quant_trading.storage.models import (
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
     AgentRunRepository,
+    AgentReviewBoardRunRepository,
     StrategySkillRepository,
 )
 
@@ -27,12 +30,13 @@ def make_client(
     *,
     require_auth: bool = False,
     token: str = "local-token",
+    configured_api_token: str | None = None,
 ) -> tuple[TestClient, object]:
     engine = make_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
     settings = AppSettings(
         require_auth=require_auth,
-        api_token=token if require_auth else None,
+        api_token=token if require_auth else configured_api_token,
     )
     return TestClient(create_app(engine=engine, settings=settings)), engine
 
@@ -130,6 +134,19 @@ def test_agent_intelligence_lists_and_retires_memories():
     assert retire_response.json()["status"] == "retired"
     assert retire_response.json()["retired_by"] == "tester"
 
+    second_retire_response = client.post(
+        f"/agents/memories/{memory.id}/retire",
+        json={"operator": "second-tester", "reason": "retry should not rewrite"},
+    )
+
+    assert second_retire_response.status_code == 200
+    assert second_retire_response.json()["retired_by"] == "tester"
+    assert second_retire_response.json()["retired_reason"] == "superseded"
+    assert (
+        second_retire_response.json()["retired_at"]
+        == retire_response.json()["retired_at"]
+    )
+
 
 def test_review_board_command_does_not_create_paper_or_broker_rows():
     client, engine = make_client()
@@ -149,6 +166,77 @@ def test_review_board_command_does_not_create_paper_or_broker_rows():
     with session_scope(engine) as session:
         assert session.scalar(select(func.count(PaperRunORM.id))) == 0
         assert session.scalar(select(func.count(BrokerOrderEventORM.id))) == 0
+
+
+def test_review_board_command_returns_exact_created_run(monkeypatch):
+    client, engine = make_client()
+    candidate_review_id = seed_candidate_review_with_validation_report(engine)
+    created_run_ids: dict[str, int] = {}
+
+    def fake_run_for_candidate_review(
+        self: ReviewBoardService,
+        requested_candidate_review_id: int,
+    ) -> SimpleNamespace:
+        assert requested_candidate_review_id == candidate_review_id
+        now = datetime(2026, 7, 6, 10, 0, 0)
+        with session_scope(self.engine) as session:
+            repo = AgentReviewBoardRunRepository(session)
+            created = repo.create_running(
+                subject_type="strategy_candidate",
+                subject_id=candidate_review_id,
+                memory_ids=[],
+                now=now,
+            )
+            newer = repo.create_running(
+                subject_type="strategy_candidate",
+                subject_id=candidate_review_id,
+                memory_ids=[],
+                now=now + timedelta(seconds=1),
+            )
+            created_run_ids["created"] = created.id
+            created_run_ids["newer"] = newer.id
+        return SimpleNamespace(board_run_id=created_run_ids["created"])
+
+    monkeypatch.setattr(
+        ReviewBoardService,
+        "run_for_candidate_review",
+        fake_run_for_candidate_review,
+    )
+
+    response = client.post(
+        f"/agents/candidate-reviews/{candidate_review_id}/review-board"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == created_run_ids["created"]
+    assert response.json()["id"] != created_run_ids["newer"]
+
+
+def test_review_board_command_redacts_configured_token_from_errors(monkeypatch):
+    secret = "configured-token-123"
+    client, engine = make_client(configured_api_token=secret)
+    candidate_review_id = seed_candidate_review_with_validation_report(engine)
+
+    def fail_with_secret(
+        self: ReviewBoardService,
+        requested_candidate_review_id: int,
+    ) -> None:
+        assert requested_candidate_review_id == candidate_review_id
+        raise ValueError(f"review board failed with {secret}")
+
+    monkeypatch.setattr(
+        ReviewBoardService,
+        "run_for_candidate_review",
+        fail_with_secret,
+    )
+
+    response = client.post(
+        f"/agents/candidate-reviews/{candidate_review_id}/review-board"
+    )
+
+    assert response.status_code == 400
+    assert secret not in response.json()["detail"]
+    assert "[REDACTED]" in response.json()["detail"]
 
 
 def test_agent_intelligence_lists_review_board_run_with_votes():

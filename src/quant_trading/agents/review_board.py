@@ -51,11 +51,13 @@ class CoordinatorRecommendation:
     final_recommendation: str
     blocking_reason_codes: list[str]
     summary: dict[str, Any]
+    board_run_id: int = 0
 
 
 class ReviewBoardService:
-    def __init__(self, engine: Engine):
+    def __init__(self, engine: Engine, settings: Any | None = None):
         self.engine = engine
+        self.settings = settings
 
     def run_for_candidate_review(
         self,
@@ -110,7 +112,7 @@ class ReviewBoardService:
                 vote_repo = AgentReviewBoardVoteRepository(session)
                 for vote in votes:
                     vote_repo.record(
-                        board_run_id=board_run.id,
+                        board_run_id=board_run_id,
                         reviewer_role=vote.reviewer_role,
                         vote=vote.vote,
                         reason_code=vote.reason_code,
@@ -125,16 +127,25 @@ class ReviewBoardService:
                     data_quality_status=data_quality.status if data_quality else "",
                 )
                 AgentReviewBoardRunRepository(session).mark_completed(
-                    board_run.id,
+                    board_run_id,
                     final_recommendation=recommendation.final_recommendation,
                     blocking_reason_codes=recommendation.blocking_reason_codes,
                     summary_payload=recommendation.summary,
                     finished_at=_utcnow(),
                     duration_ms=_duration_ms(started_at, _utcnow()),
                 )
-                return recommendation
+                return CoordinatorRecommendation(
+                    final_recommendation=recommendation.final_recommendation,
+                    blocking_reason_codes=recommendation.blocking_reason_codes,
+                    summary=recommendation.summary,
+                    board_run_id=board_run_id,
+                )
         except Exception as exc:
-            message = sanitize_error_message(exc, max_chars=1000)
+            message = sanitize_error_message(
+                exc,
+                settings=self.settings,
+                max_chars=1000,
+            )
             if board_run_id is not None:
                 try:
                     with session_scope(self.engine) as session:

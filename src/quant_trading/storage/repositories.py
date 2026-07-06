@@ -1685,6 +1685,8 @@ class AgentLearningMemoryRepository:
         row = self.get(memory_id)
         if row is None:
             raise ValueError(f"agent learning memory not found: {memory_id}")
+        if row.status == "retired":
+            return row
         row.status = "retired"
         row.retired_by = _cap_text(retired_by, 128)
         row.retired_reason = _cap_text(retired_reason, 1000)

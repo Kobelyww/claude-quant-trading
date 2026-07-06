@@ -6,7 +6,6 @@ from typing import Any, NoReturn
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
 
 from quant_trading.agents.memory import (
     LearningMemoryError,
@@ -165,26 +164,22 @@ def run_candidate_review_board(
     candidate_review_id: int,
     request: Request,
 ) -> dict[str, Any]:
+    settings = request.app.state.settings
     try:
-        ReviewBoardService(request.app.state.engine).run_for_candidate_review(
-            candidate_review_id
+        recommendation = ReviewBoardService(
+            request.app.state.engine,
+            settings=settings,
+        ).run_for_candidate_review(
+            candidate_review_id,
         )
     except ValueError as exc:
-        _raise_review_board_http_error(exc)
+        _raise_review_board_http_error(exc, settings=settings)
     except Exception as exc:
-        message = sanitize_error_message(exc, max_chars=1000)
+        message = sanitize_error_message(exc, settings=settings, max_chars=1000)
         raise HTTPException(status_code=400, detail=message) from exc
 
     with session_scope(request.app.state.engine) as session:
-        run = session.scalar(
-            select(AgentReviewBoardRunORM)
-            .where(
-                AgentReviewBoardRunORM.subject_type == "strategy_candidate",
-                AgentReviewBoardRunORM.subject_id == candidate_review_id,
-            )
-            .order_by(AgentReviewBoardRunORM.id.desc())
-            .limit(1)
-        )
+        run = AgentReviewBoardRunRepository(session).get(recommendation.board_run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="review board run not found")
         payload = _review_board_run_payload(run)
@@ -311,7 +306,11 @@ def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def _raise_review_board_http_error(exc: ValueError) -> NoReturn:
-    message = sanitize_error_message(exc, max_chars=1000)
+def _raise_review_board_http_error(
+    exc: ValueError,
+    *,
+    settings: Any | None = None,
+) -> NoReturn:
+    message = sanitize_error_message(exc, settings=settings, max_chars=1000)
     status_code = 404 if "not found" in message.lower() else 400
     raise HTTPException(status_code=status_code, detail=message) from exc

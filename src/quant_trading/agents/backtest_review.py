@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
-import re
 from typing import Any
 
 from sqlalchemy import Engine, func, select
 
+from quant_trading.agents.output_safety import contains_unsafe_agent_text
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import (
     AgentCandidateReviewORM,
@@ -29,69 +29,6 @@ _SUMMARY_LIMIT = 500
 _LIST_LIMIT = 20
 _SAFE_MANUAL_REVIEW_STEP = (
     "review the backtest output manually before any further research action"
-)
-_UNSAFE_TEXT_PATTERNS = (
-    re.compile(r"\b(?:buy|buying|sell|selling)\b", re.IGNORECASE),
-    re.compile(r"\bpaper[-\s]+(?:trading|trade|run|runs)\b", re.IGNORECASE),
-    re.compile(r"\b(?:broker|brokers|brokerage|exchange|exchanges)\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:submit|place|send|create|execute)\b.{0,40}\b"
-        r"(?:order|orders|market\s+order|market\s+orders)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:submit|place|send|create|execute)\b.{0,40}\b"
-        r"(?:trade|trades|trading)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:trade|trades|trading)\b.{0,40}\b"
-        r"(?:tomorrow|next\s+\w+|after\s+review|now|live|real\s+money)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:order|orders|market\s+order|market\s+orders)\b.{0,40}\b"
-        r"(?:submit|place|send|create|execute)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bgo\s+live\b", re.IGNORECASE),
-    re.compile(
-        r"\blive\s+"
-        r"(?:trade|trades|trading|order|orders|market\s+order|market\s+orders)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\b(?:real\s+money|real\s+capital|production\s+trading)\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:open|close)\b.{0,30}\b(?:long|short)\s+position\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\b(?:long|short)\s+position\b", re.IGNORECASE),
-    re.compile(r"\bmarket\s+orders?\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:will|expect|expected|expects|expecting)\b.{0,40}\b"
-        r"(?:profitable|positive\s+returns?|profit|profits|profitability|returns?)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:guarantee|guarantees|guaranteed|guaranteeing)\b.{0,40}\b"
-        r"(?:profit|profits|profitability|return|returns|gain|gains)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:future|guaranteed)\b.{0,40}\b"
-        r"(?:profit|profits|profitability|return|returns|gain|gains)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"```", re.IGNORECASE),
-    re.compile(r"\bdef\s+\w+\s*\(", re.IGNORECASE),
-    re.compile(r"\bclass\s+\w+\s*[:(]", re.IGNORECASE),
-    re.compile(r"\bimport\s+[\w.]+", re.IGNORECASE),
-    re.compile(r"\bfrom\s+[\w.]+\s+import\s+\w+", re.IGNORECASE),
-    re.compile(r"\bprint\s*\(", re.IGNORECASE),
-    re.compile(r"^\s*[A-Za-z_]\w*\s*=\s*.+", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"^\s*[A-Za-z_]\w*\s*\([^)]*\)\s*$", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"\b(?:executable|generated)\s+code\b", re.IGNORECASE),
-    re.compile(r"\b(?:source\s+code|code\s+(?:block|snippet))\b", re.IGNORECASE),
 )
 
 
@@ -163,7 +100,7 @@ def parse_backtest_review_response(
         review_status = "needs_review"
         issues.append("invalid paper_trading_readiness value")
         readiness = "needs_review"
-    if _contains_unsafe_text(
+    if contains_unsafe_agent_text(
         [raw_readiness, summary, *risk_flags, *overfit_warnings, *recommended_next_steps]
     ):
         review_status = "needs_review"
@@ -376,7 +313,7 @@ def _fallback_review(
 ) -> dict[str, Any]:
     summary = (
         "unstructured review output requires manual review"
-        if _contains_unsafe_text([content])
+        if contains_unsafe_agent_text([content])
         else _bounded_summary(content)
     )
     return {
@@ -454,10 +391,3 @@ def _string_list(value: Any) -> list[str]:
         if len(result) >= _LIST_LIMIT:
             break
     return result
-
-
-def _contains_unsafe_text(values: list[str]) -> bool:
-    for value in values:
-        if any(pattern.search(value) for pattern in _UNSAFE_TEXT_PATTERNS):
-            return True
-    return False

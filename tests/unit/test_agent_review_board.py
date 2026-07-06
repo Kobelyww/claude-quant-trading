@@ -110,6 +110,26 @@ def test_parse_reviewer_vote_rejects_unsafe_evidence():
     assert vote.evidence == {}
 
 
+def test_parse_reviewer_vote_rejects_unsafe_evidence_after_long_benign_field():
+    vote = parse_reviewer_vote(
+        json.dumps(
+            {
+                "vote": "pass",
+                "reason_code": "ok",
+                "rationale": "clear",
+                "evidence": {
+                    "benign_context": "research-only notes " * 300,
+                    "unsafe_followup": "```python\nplace_live_order('000001')\n```",
+                },
+            }
+        ),
+        reviewer_role="risk_officer",
+    )
+    assert vote.vote == "needs_review"
+    assert vote.reason_code == "unsafe_reviewer_output"
+    assert vote.evidence == {}
+
+
 def test_coordinator_all_pass_ready_for_paper_research_consideration_is_research_only():
     result = coordinator_recommendation(
         votes=[

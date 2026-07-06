@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
@@ -166,7 +167,7 @@ def parse_reviewer_vote(content: str, reviewer_role: str) -> ReviewBoardVote:
 
     if vote not in SUPPORTED_REVIEWER_VOTES:
         return _invalid_vote(reviewer_role)
-    if contains_unsafe_agent_text([rationale, _bounded_json_dumps(evidence)]):
+    if contains_unsafe_agent_text(_reviewer_vote_safety_text(rationale, evidence)):
         return ReviewBoardVote(
             reviewer_role,
             "needs_review",
@@ -254,12 +255,29 @@ def _invalid_vote(reviewer_role: str) -> ReviewBoardVote:
     )
 
 
-def _bounded_json_dumps(value: Any, *, max_chars: int = 4000) -> str:
-    try:
-        text = json.dumps(value, sort_keys=True, default=str)
-    except TypeError:
-        text = str(value)
-    return text[:max_chars]
+def _reviewer_vote_safety_text(
+    rationale: str,
+    evidence: dict[str, Any],
+) -> Iterator[str]:
+    yield rationale
+    yield from _evidence_text_values(evidence)
+
+
+def _evidence_text_values(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _evidence_text_values(key)
+            yield from _evidence_text_values(item)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _evidence_text_values(item)
+        return
+    if isinstance(value, (int, float, bool)):
+        yield str(value)
 
 
 def _readiness_floor_block_reason(normalized_floor: str) -> str | None:

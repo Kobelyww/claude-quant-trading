@@ -65,6 +65,41 @@ def test_extract_candidate_memories_command_requires_auth_when_enabled():
     assert response.status_code == 401
 
 
+def test_extract_candidate_memories_command_returns_rejection_memory():
+    client, engine = make_client()
+    candidate_review_id = seed_rejected_candidate_review(engine)
+
+    response = client.post(
+        f"/agents/candidate-reviews/{candidate_review_id}/extract-memories"
+    )
+
+    assert response.status_code == 200
+    memories = response.json()
+    assert len(memories) == 1
+    assert memories[0]["memory_type"] == "operator_decision"
+    assert memories[0]["reason_code"] == "candidate_rejected"
+    assert memories[0]["source_type"] == "candidate_review"
+    assert memories[0]["source_id"] == candidate_review_id
+    assert memories[0]["symbol"] == "000001"
+
+
+def test_extract_validation_report_memories_command_returns_failure_memory():
+    client, engine = make_client()
+    report_id = seed_research_validation_report(engine)
+
+    response = client.post(
+        f"/agents/research-validation-reports/{report_id}/extract-memories"
+    )
+
+    assert response.status_code == 200
+    memories = response.json()
+    assert len(memories) == 1
+    assert memories[0]["memory_type"] == "strategy_failure"
+    assert memories[0]["source_type"] == "research_validation_report"
+    assert memories[0]["source_id"] == report_id
+    assert memories[0]["symbol"] == "000001"
+
+
 def test_agent_intelligence_lists_and_retires_memories():
     client, engine = make_client()
     memory = LearningMemoryService(engine).create_manual_memory(
@@ -138,6 +173,37 @@ def test_agent_intelligence_lists_review_board_run_with_votes():
         "validation_reviewer",
         "operations_reviewer",
     }
+
+
+def seed_rejected_candidate_review(engine) -> int:
+    candidate_review_id = seed_candidate_review_with_validation_report(engine)
+    now = datetime(2026, 7, 6, 9, 0, 0)
+    with session_scope(engine) as session:
+        repo = AgentCandidateReviewRepository(session)
+        candidate = repo.get(candidate_review_id)
+        assert candidate is not None
+        repo.update_rejection(
+            candidate,
+            candidate_payload=candidate.candidate_payload,
+            backtest_request_payload=candidate.backtest_request_payload,
+            operator="tester",
+            operator_note="rejected after validation gaps",
+            decided_at=now,
+            updated_at=now,
+        )
+        return candidate_review_id
+
+
+def seed_research_validation_report(engine) -> int:
+    candidate_review_id = seed_candidate_review_with_validation_report(engine)
+    with session_scope(engine) as session:
+        report_id = session.scalar(
+            select(ResearchValidationReportORM.id).where(
+                ResearchValidationReportORM.candidate_review_id == candidate_review_id
+            )
+        )
+        assert report_id is not None
+        return report_id
 
 
 def seed_candidate_review_with_validation_report(engine) -> int:

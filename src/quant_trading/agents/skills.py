@@ -158,11 +158,12 @@ class StrategySkillRegistry:
         request_symbol: str | None,
     ) -> SkillValidationResult:
         skill_key = _requested_skill_key(payload)
+        safety_flags = _scan_safety_flags(payload)
         if skill_key != SUPPORTED_TEMPLATE:
             return SkillValidationResult(
                 STATUS_FAILED,
                 [f"unsupported strategy_skill_key: {skill_key}"],
-                [],
+                safety_flags,
                 None,
                 None,
             )
@@ -172,7 +173,7 @@ class StrategySkillRegistry:
             return SkillValidationResult(
                 STATUS_FAILED,
                 [f"unsupported strategy_skill_key: {skill_key}"],
-                [],
+                safety_flags,
                 None,
                 None,
             )

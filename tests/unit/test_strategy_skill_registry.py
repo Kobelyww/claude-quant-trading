@@ -41,13 +41,18 @@ def test_registry_validates_ma_cross_candidate_and_preserves_backtest_payload():
     assert result.backtest_request_payload["payload"]["initial_cash"] == "100000"
 
 
-def test_registry_rejects_unsupported_skill_without_backtest_payload():
+def test_registry_rejects_unsupported_skill_with_safety_flags_without_backtest_payload():
     registry = StrategySkillRegistry.from_defaults()
     result = registry.validate_candidate(
-        {"strategy_skill_key": "arbitrary_python", "thesis": "run generated code"},
+        {
+            "strategy_skill_key": "arbitrary_python",
+            "thesis": "run generated code\n```python\ndef trade():\n    return 1\n```",
+        },
         request_symbol="000001",
     )
 
     assert result.validation_status == "failed"
     assert "unsupported strategy_skill_key: arbitrary_python" in result.validation_errors
+    assert "contains_executable_code" in result.safety_flags
+    assert result.candidate_payload is None
     assert result.backtest_request_payload is None

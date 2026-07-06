@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import json
 from typing import Any
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
 
 from quant_trading.agents.memory import LearningMemoryService
 from quant_trading.agents.output_safety import contains_unsafe_agent_text
@@ -15,6 +15,7 @@ from quant_trading.storage.models import (
     AgentCandidateReviewORM,
     DataQualityReportORM,
     ResearchValidationReportORM,
+    SafetyIncidentORM,
 )
 from quant_trading.storage.repositories import (
     AgentCandidateReviewRepository,
@@ -283,7 +284,7 @@ def _deterministic_votes(
         _strategy_researcher_vote(session, candidate),
         _risk_officer_vote(validation),
         _validation_reviewer_vote(validation),
-        _operations_reviewer_vote(candidate, memories_count),
+        _operations_reviewer_vote(session, candidate, memories_count),
     ]
 
 
@@ -446,9 +447,26 @@ def _validation_reviewer_vote(
 
 
 def _operations_reviewer_vote(
+    session,
     candidate: AgentCandidateReviewORM,
     memories_count: int,
 ) -> ReviewBoardVote:
+    unresolved_incidents = _linked_unresolved_safety_incidents(session, candidate)
+    if unresolved_incidents:
+        return ReviewBoardVote(
+            "operations_reviewer",
+            "needs_review",
+            "unresolved_linked_safety_incident",
+            "Unresolved pre-live safety incident is linked to this candidate.",
+            {
+                "candidate_review_id": candidate.id,
+                "linked_incident_ids": [incident.id for incident in unresolved_incidents],
+                "linked_incident_reason_codes": [
+                    incident.reason_code for incident in unresolved_incidents
+                ],
+                "retrieved_memory_count": memories_count,
+            },
+        )
     return ReviewBoardVote(
         "operations_reviewer",
         "pass",
@@ -459,6 +477,24 @@ def _operations_reviewer_vote(
             "linked_incident_check": "not_linked_in_v1",
             "retrieved_memory_count": memories_count,
         },
+    )
+
+
+def _linked_unresolved_safety_incidents(
+    session,
+    candidate: AgentCandidateReviewORM,
+) -> list[SafetyIncidentORM]:
+    return list(
+        session.scalars(
+            select(SafetyIncidentORM)
+            .where(
+                SafetyIncidentORM.resource_type == "agent_candidate_review",
+                SafetyIncidentORM.resource_id == candidate.id,
+                SafetyIncidentORM.status.in_(("open", "acknowledged")),
+            )
+            .order_by(SafetyIncidentORM.id.asc())
+            .limit(10)
+        ).all()
     )
 
 

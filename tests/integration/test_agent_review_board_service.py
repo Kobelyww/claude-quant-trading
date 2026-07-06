@@ -13,6 +13,7 @@ from quant_trading.storage.repositories import (
     AgentReviewBoardRunRepository,
     AgentReviewBoardVoteRepository,
     AgentRunRepository,
+    SafetyIncidentRepository,
     StrategySkillRepository,
 )
 
@@ -41,6 +42,39 @@ def test_review_board_service_persists_deterministic_votes_for_candidate_review(
             "validation_reviewer",
             "operations_reviewer",
         }
+
+
+def test_review_board_operations_reviewer_flags_linked_unresolved_safety_incident():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id = seed_candidate_review_with_validation_report(
+        engine,
+        validation_status="passed",
+        readiness_floor="ready_for_paper_research",
+        data_quality_status="passed",
+    )
+    with session_scope(engine) as session:
+        SafetyIncidentRepository(session).create(
+            severity="high",
+            category="pre_live_safety",
+            resource_type="agent_candidate_review",
+            resource_id=candidate_review_id,
+            reason_code="pre_live_safety_unresolved",
+            message="manual safety review still open",
+            payload={"candidate_review_id": candidate_review_id},
+            created_at=datetime(2026, 7, 6, 9, 5, 0),
+        )
+
+    ReviewBoardService(engine).run_for_candidate_review(candidate_review_id)
+
+    with session_scope(engine) as session:
+        board_runs = AgentReviewBoardRunRepository(session).list_recent(limit=10)
+        votes = AgentReviewBoardVoteRepository(session).list_for_board(board_runs[0].id)
+        operations_vote = next(
+            vote for vote in votes if vote.reviewer_role == "operations_reviewer"
+        )
+        assert operations_vote.vote != "pass"
+        assert operations_vote.reason_code == "unresolved_linked_safety_incident"
 
 
 def seed_candidate_review_with_validation_report(

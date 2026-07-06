@@ -15,6 +15,7 @@ from quant_trading.storage.models import (
     PaperRunORM,
     SafetyIncidentORM,
 )
+from quant_trading.storage.repositories import AgentLearningMemoryRepository
 
 
 def make_client():
@@ -43,6 +44,47 @@ def test_dashboard_renders_workflow_forms_and_empty_state():
     assert "Safe For Live false" in html
     assert "Backtest Runs" in html
     assert "Paper Accounts" in html
+
+
+def test_dashboard_displays_agent_intelligence_section():
+    client, _ = make_client()
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "Agent Intelligence" in html
+    assert "Active Strategy Skills" in html
+    assert "Recent Learning Memories" in html
+    assert "Recent Review Board Runs" in html
+
+
+def test_dashboard_escapes_agent_intelligence_memory_content():
+    client, engine = make_client()
+    now = datetime(2026, 7, 6, 9, 30, 0)
+    with session_scope(engine) as session:
+        AgentLearningMemoryRepository(session).get_or_create_active(
+            memory_type="operator_decision",
+            scope="global",
+            source_type="candidate_review",
+            source_id=77,
+            reason_code="html_escape",
+            title="<strong>memory title</strong>",
+            content="review <script>alert(1)</script> content",
+            evidence_payload={"candidate_review_id": 77},
+            confidence=Decimal("1"),
+            importance=Decimal("0.5"),
+            now=now,
+        )
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "&lt;strong&gt;memory title&lt;/strong&gt;" in html
+    assert "review &lt;script&gt;alert(1)&lt;/script&gt; content" in html
+    assert "<strong>memory title</strong>" not in html
+    assert "<script>alert(1)</script>" not in html
 
 
 def test_dashboard_displays_operations_safety_posture():

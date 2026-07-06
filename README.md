@@ -509,6 +509,50 @@ Backtest review jobs require a linked validation report by default. The request 
 Validation output remains research-only. It does not create paper runs, approve paper
 trading, call broker adapters, place orders, or execute generated code.
 
+### Quant Agent Intelligence Layer
+
+The agent intelligence layer adds three research-only surfaces: a strategy skill registry,
+durable learning memories, and auditable review-board runs. Learning memories are advisory
+context for future research and review prompts; they are not authority, and they never outrank
+deterministic validation, safety checks, or operator approvals.
+
+V1 exposes only the seeded `ma_cross` skill as an executable deterministic backtest template.
+Other generated strategy ideas remain research text unless they are mapped to an approved
+registry skill and pass the existing validation path.
+
+Review board recommendations are records of specialist votes and a coordinator
+recommendation. They do not create paper runs, call broker adapters, place orders, create order
+intents, or approve strategies automatically. `ready_for_paper_research_consideration` means
+human-reviewed paper research consideration only.
+
+Read skills and memories:
+
+```bash
+curl http://127.0.0.1:8000/agents/skills
+curl http://127.0.0.1:8000/agents/skills/ma_cross
+curl "http://127.0.0.1:8000/agents/memories?symbol=000001&limit=50"
+```
+
+Run research-only memory extraction or a review board:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agents/candidate-reviews/1/extract-memories
+curl -X POST http://127.0.0.1:8000/agents/research-validation-reports/1/extract-memories
+curl -X POST http://127.0.0.1:8000/agents/candidate-reviews/1/review-board
+```
+
+Retire a superseded memory:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agents/memories/1/retire \
+  -H "Content-Type: application/json" \
+  -d '{"operator":"researcher","reason":"superseded by newer validation"}'
+```
+
+When `QUANT_REQUIRE_AUTH=true`, these read and command APIs are protected by the same token
+auth middleware as the rest of the API. The examples above intentionally use localhost and no
+secrets.
+
 ## Job Tasks
 
 The current task functions live in `quant_trading.jobs.tasks`:

@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import (
+    AgentLearningMemoryORM,
+    AgentReviewBoardVoteORM,
     BacktestRunORM,
     CashLedgerORM,
     DataSyncRunORM,
@@ -36,10 +38,13 @@ from quant_trading.storage.models import (
     WorkflowRunORM,
 )
 from quant_trading.storage.repositories import (
+    AgentLearningMemoryRepository,
+    AgentReviewBoardRunRepository,
     DataSyncRunRepository,
     JobEventRepository,
     JobRunRepository,
     JobScheduleRepository,
+    StrategySkillRepository,
     WorkflowRunRepository,
 )
 from quant_trading.workflows.operations import (
@@ -236,6 +241,39 @@ def _collect_state(request: Request) -> dict[str, Any]:
             "active_job": active_job,
             "active_job_latest_event_id": active_job_latest_event_id,
             "data_sync_runs": DataSyncRunRepository(session).list_recent(limit=20),
+            "strategy_skills": StrategySkillRepository(session).list_active(limit=10),
+            "learning_memories": AgentLearningMemoryRepository(session).list_active(
+                limit=10,
+                now=_now(),
+            ),
+            "retired_learning_memories": list(
+                session.scalars(
+                    select(AgentLearningMemoryORM)
+                    .where(AgentLearningMemoryORM.status == "retired")
+                    .order_by(AgentLearningMemoryORM.id.desc())
+                    .limit(10)
+                ).all()
+            ),
+            "review_board_runs": AgentReviewBoardRunRepository(session).list_recent(
+                limit=10,
+            ),
+            "review_board_vote_counts": list(
+                session.execute(
+                    select(
+                        AgentReviewBoardVoteORM.reviewer_role,
+                        AgentReviewBoardVoteORM.vote,
+                        func.count(AgentReviewBoardVoteORM.id),
+                    )
+                    .group_by(
+                        AgentReviewBoardVoteORM.reviewer_role,
+                        AgentReviewBoardVoteORM.vote,
+                    )
+                    .order_by(
+                        AgentReviewBoardVoteORM.reviewer_role.asc(),
+                        AgentReviewBoardVoteORM.vote.asc(),
+                    )
+                ).all()
+            ),
             "backtests": _latest(session, BacktestRunORM),
             "accounts": _latest(session, PaperAccountORM),
             "runs": _latest(session, PaperRunORM),
@@ -311,6 +349,7 @@ def _render_dashboard(
     <div class="metric"><span>Instruments</span>{_e(state["instrument_count"])}</div>
     <div class="metric"><span>Latest Imported Bar</span>{_e(state["latest_bar"] or "none")}</div>
   </section>
+  {_agent_intelligence_section(state)}
   {_operations_safety_section(state)}
   <section class="forms" aria-label="Dashboard actions">
     {_render_forms(state)}
@@ -333,6 +372,85 @@ def _render_dashboard(
 </main>
 </body>
 </html>"""
+
+
+def _agent_intelligence_section(state: dict[str, Any]) -> str:
+    skills = _table(
+        "Active Strategy Skills",
+        ["ID", "Skill", "Version", "Status", "Template", "Updated"],
+        state["strategy_skills"],
+        lambda r: [
+            f"#{r.id}",
+            r.skill_key,
+            r.version,
+            r.status,
+            r.template_type,
+            r.updated_at,
+        ],
+    )
+    memories = _table(
+        "Recent Learning Memories",
+        ["ID", "Type", "Scope", "Symbol", "Reason", "Title", "Content", "Importance"],
+        state["learning_memories"],
+        lambda r: [
+            f"#{r.id}",
+            r.memory_type,
+            r.scope,
+            r.symbol or "",
+            r.reason_code,
+            r.title,
+            r.content,
+            r.importance,
+        ],
+    )
+    board_runs = _table(
+        "Recent Review Board Runs",
+        ["ID", "Subject", "Status", "Recommendation", "Created", "Duration"],
+        state["review_board_runs"],
+        lambda r: [
+            f"#{r.id}",
+            f"{r.subject_type} #{r.subject_id}",
+            r.status,
+            r.final_recommendation or "",
+            r.created_at,
+            f"{r.duration_ms} ms" if r.duration_ms is not None else "",
+        ],
+    )
+    vote_counts = _table(
+        "Review Board Vote Counts",
+        ["Role", "Vote", "Count"],
+        state["review_board_vote_counts"],
+        lambda r: [r[0], r[1], r[2]],
+    )
+    retired_memories = _table(
+        "Recent Retired Memories",
+        ["ID", "Type", "Reason", "Title", "Retired By", "Retired At", "Retired Reason"],
+        state["retired_learning_memories"],
+        lambda r: [
+            f"#{r.id}",
+            r.memory_type,
+            r.reason_code,
+            r.title,
+            r.retired_by or "",
+            r.retired_at or "",
+            r.retired_reason or "",
+        ],
+    )
+    return f"""
+  <section aria-label="Agent Intelligence">
+    <h2>Agent Intelligence</h2>
+    <div class="meta">
+      {_metric("Active Skills", len(state["strategy_skills"]))}
+      {_metric("Active Memories", len(state["learning_memories"]))}
+      {_metric("Review Board Runs", len(state["review_board_runs"]))}
+    </div>
+    {skills}
+    {memories}
+    {board_runs}
+    {vote_counts}
+    {retired_memories}
+  </section>
+  """
 
 
 def _operations_safety_section(state: dict[str, Any]) -> str:

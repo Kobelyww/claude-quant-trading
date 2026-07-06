@@ -40,6 +40,18 @@ def _default_text(column: dict) -> str:
     return str(column.get("default") or "").strip("'\"")
 
 
+def _where_text(index: dict) -> str:
+    dialect_options = index.get("dialect_options") or {}
+    where = dialect_options.get("sqlite_where")
+    if where is None:
+        where = dialect_options.get("postgresql_where")
+    if where is None:
+        where = index.get("where")
+    if where is None:
+        where = ""
+    return str(where).lower()
+
+
 def _assert_validation_report_schema(inspector) -> None:
     candidate_review_columns = _columns(inspector, "agent_candidate_reviews")
     assert {
@@ -484,6 +496,22 @@ def _assert_agent_intelligence_schema(inspector) -> None:
     } <= set(memory_columns)
     assert memory_columns["memory_type"]["nullable"] is False
     assert memory_columns["source_id"]["nullable"] is False
+    memory_indexes = _index_columns(inspector, "agent_learning_memories")
+    assert memory_indexes["uq_agent_learning_memories_active_source_reason"] == (
+        "memory_type",
+        "source_type",
+        "source_id",
+        "reason_code",
+    )
+    active_memory_index = _index_by_name(
+        inspector,
+        "agent_learning_memories",
+        "uq_agent_learning_memories_active_source_reason",
+    )
+    assert active_memory_index["unique"] == 1
+    active_memory_where = _where_text(active_memory_index)
+    assert "status" in active_memory_where
+    assert "active" in active_memory_where
 
     board_columns = _columns(inspector, "agent_review_board_runs")
     assert {
@@ -585,13 +613,27 @@ def test_alembic_upgrade_head_creates_runtime_schema(tmp_path: Path, monkeypatch
         ).scalar_one()
         ma_cross_seed = connection.execute(
             text(
-                "select skill_key, version, status "
+                "select skill_key, version, status, template_type, "
+                "supported_markets_payload, required_data_fields_payload, "
+                "parameter_schema_payload, validation_rules_payload, "
+                "risk_notes_payload, prompt_guidance "
                 "from strategy_skills where skill_key = 'ma_cross'"
             )
         ).one()
     assert tuple(row) == ("global", False, True, True, False)
     assert "WHERE status = 'pending'" in partial_index_sql
-    assert tuple(ma_cross_seed) == ("ma_cross", "1.0.0", "active")
+    assert tuple(ma_cross_seed) == (
+        "ma_cross",
+        "1.0.0",
+        "active",
+        "deterministic_template",
+        '["A_STOCK"]',
+        '["open","high","low","close","volume","timestamp","symbol"]',
+        '{"short_window":{"type":"positive_int"},"long_window":{"type":"positive_int_gt_short_window"},"order_size":{"type":"positive_int"},"initial_cash":{"type":"positive_decimal_string"}}',
+        '{"no_generated_code":true,"no_live_trading_recommendation":true,"readiness_floor_caps_review":true}',
+        '{"template_risks":["trend-following lag","sideways whipsaw","parameter overfit"]}',
+        "Use only for deterministic moving-average crossover research. Do not output executable code or trading instructions.",
+    )
 
 
 def test_validation_report_migration_downgrade_and_reupgrade(

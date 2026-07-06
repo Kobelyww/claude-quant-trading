@@ -77,14 +77,73 @@ def test_review_board_operations_reviewer_flags_linked_unresolved_safety_inciden
         assert operations_vote.reason_code == "unresolved_linked_safety_incident"
 
 
+def test_review_board_persists_vote_for_non_object_candidate_payload():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id = seed_candidate_review_with_validation_report(
+        engine,
+        validation_status="passed",
+        readiness_floor="ready_for_paper_research",
+        data_quality_status="passed",
+        candidate_payload="[]",
+    )
+
+    result = ReviewBoardService(engine).run_for_candidate_review(candidate_review_id)
+
+    assert result.final_recommendation == "needs_more_research"
+    with session_scope(engine) as session:
+        board_runs = AgentReviewBoardRunRepository(session).list_recent(limit=10)
+        assert len(board_runs) == 1
+        votes = AgentReviewBoardVoteRepository(session).list_for_board(board_runs[0].id)
+        strategy_vote = next(
+            vote for vote in votes if vote.reviewer_role == "strategy_researcher"
+        )
+        assert strategy_vote.vote == "needs_review"
+        assert strategy_vote.reason_code == "strategy_payload_invalid"
+
+
+def test_review_board_validation_reviewer_caps_running_validation():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    candidate_review_id = seed_candidate_review_with_validation_report(
+        engine,
+        validation_status="running",
+        readiness_floor="running",
+        data_quality_status="passed",
+    )
+
+    result = ReviewBoardService(engine).run_for_candidate_review(candidate_review_id)
+
+    assert result.final_recommendation == "needs_more_research"
+    with session_scope(engine) as session:
+        board_runs = AgentReviewBoardRunRepository(session).list_recent(limit=10)
+        votes = AgentReviewBoardVoteRepository(session).list_for_board(board_runs[0].id)
+        validation_vote = next(
+            vote for vote in votes if vote.reviewer_role == "validation_reviewer"
+        )
+        assert validation_vote.vote == "needs_review"
+        assert validation_vote.reason_code == "validation_unknown_or_in_progress"
+
+
 def seed_candidate_review_with_validation_report(
     engine,
     *,
     validation_status: str,
     readiness_floor: str,
     data_quality_status: str,
+    candidate_payload: str | None = None,
 ) -> int:
     now = datetime(2026, 7, 6, 9, 0, 0)
+    if candidate_payload is None:
+        candidate_payload = json.dumps(
+            {
+                "strategy_name": "ma_cross",
+                "strategy_skill_key": "ma_cross",
+                "strategy_skill_version": "1.0.0",
+                "symbol": "000001",
+            },
+            sort_keys=True,
+        )
     with session_scope(engine) as session:
         StrategySkillRepository(session).ensure_seeded(now)
         source = AgentRunRepository(session).create_running(
@@ -117,15 +176,7 @@ def seed_candidate_review_with_validation_report(
             status="backtest_succeeded",
             symbol="000001",
             strategy_name="ma_cross",
-            candidate_payload=json.dumps(
-                {
-                    "strategy_name": "ma_cross",
-                    "strategy_skill_key": "ma_cross",
-                    "strategy_skill_version": "1.0.0",
-                    "symbol": "000001",
-                },
-                sort_keys=True,
-            ),
+            candidate_payload=candidate_payload,
             backtest_request_payload=json.dumps(
                 {"job_type": "backtest_ma_cross", "payload": {"symbol": "000001"}},
                 sort_keys=True,

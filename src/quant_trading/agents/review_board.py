@@ -28,6 +28,12 @@ from quant_trading.storage.repositories import (
 
 
 SUPPORTED_REVIEWER_VOTES = {"block", "needs_review", "pass"}
+READY_FOR_PAPER_RESEARCH = "ready_for_paper_research"
+READINESS_NEEDS_REVIEW = "needs_review"
+READINESS_NOT_READY = "not_ready"
+VALIDATION_STATUS_FAILED = "failed"
+VALIDATION_STATUS_NEEDS_REVIEW = "needs_review"
+VALIDATION_STATUS_PASSED = "passed"
 
 
 @dataclass(frozen=True)
@@ -160,7 +166,7 @@ def parse_reviewer_vote(content: str, reviewer_role: str) -> ReviewBoardVote:
 
     if vote not in SUPPORTED_REVIEWER_VOTES:
         return _invalid_vote(reviewer_role)
-    if contains_unsafe_agent_text([rationale]):
+    if contains_unsafe_agent_text([rationale, _bounded_json_dumps(evidence)]):
         return ReviewBoardVote(
             reviewer_role,
             "needs_review",
@@ -185,8 +191,6 @@ def coordinator_recommendation(
     if normalized_data_quality == "failed":
         blocking_reason_codes.append("data_quality_failed")
         final_recommendation = "reject"
-    elif normalized_floor == "not_ready":
-        blocking_reason_codes.append("readiness_floor_not_ready")
     else:
         block_reason_codes = [
             vote.reason_code for vote in votes if vote.vote == "block" and vote.reason_code
@@ -198,11 +202,18 @@ def coordinator_recommendation(
         ]
         blocking_reason_codes.extend(block_reason_codes)
         blocking_reason_codes.extend(needs_review_reason_codes)
-        if not block_reason_codes and not needs_review_reason_codes:
-            if normalized_floor == "ready_for_paper_research":
-                final_recommendation = "ready_for_paper_research_consideration"
-            else:
-                final_recommendation = "ready_for_human_backtest_approval"
+        if normalized_data_quality != "passed":
+            blocking_reason_codes.append("data_quality_not_passed")
+        readiness_floor_reason = _readiness_floor_block_reason(normalized_floor)
+        if readiness_floor_reason:
+            blocking_reason_codes.append(readiness_floor_reason)
+        if (
+            not block_reason_codes
+            and not needs_review_reason_codes
+            and normalized_data_quality == "passed"
+            and readiness_floor_reason is None
+        ):
+            final_recommendation = "ready_for_paper_research_consideration"
 
     blocking_reason_codes = _deduplicate(blocking_reason_codes)
     summary = {
@@ -241,6 +252,24 @@ def _invalid_vote(reviewer_role: str) -> ReviewBoardVote:
         "Reviewer output was not valid review-board JSON.",
         {},
     )
+
+
+def _bounded_json_dumps(value: Any, *, max_chars: int = 4000) -> str:
+    try:
+        text = json.dumps(value, sort_keys=True, default=str)
+    except TypeError:
+        text = str(value)
+    return text[:max_chars]
+
+
+def _readiness_floor_block_reason(normalized_floor: str) -> str | None:
+    if normalized_floor == READY_FOR_PAPER_RESEARCH:
+        return None
+    if normalized_floor == READINESS_NOT_READY:
+        return "readiness_floor_not_ready"
+    if normalized_floor == READINESS_NEEDS_REVIEW:
+        return "readiness_floor_needs_review"
+    return "readiness_floor_unknown_or_in_progress"
 
 
 def _deduplicate(values: list[str]) -> list[str]:
@@ -331,7 +360,18 @@ def _data_steward_vote(data_quality: DataQualityReportORM | None) -> ReviewBoard
 
 
 def _strategy_researcher_vote(session, candidate: AgentCandidateReviewORM) -> ReviewBoardVote:
-    payload = _json_loads(candidate.candidate_payload)
+    payload = _json_object_loads(candidate.candidate_payload)
+    if payload is None:
+        return ReviewBoardVote(
+            "strategy_researcher",
+            "needs_review",
+            "strategy_payload_invalid",
+            "Strategy candidate payload is not a JSON object.",
+            {
+                "strategy_name": candidate.strategy_name,
+                "candidate_review_id": candidate.id,
+            },
+        )
     strategy_skill_key = str(
         payload.get("strategy_skill_key")
         or payload.get("strategy_name")
@@ -413,12 +453,22 @@ def _validation_reviewer_vote(
             "Research validation report is missing.",
             {},
         )
+    validation_status = str(validation.validation_status or "").strip().lower()
+    readiness_floor = str(validation.readiness_floor or "").strip().lower()
     evidence = {
         "research_validation_report_id": validation.id,
         "validation_status": validation.validation_status,
         "readiness_floor": validation.readiness_floor,
     }
-    if validation.readiness_floor == "not_ready":
+    if validation_status == VALIDATION_STATUS_FAILED:
+        return ReviewBoardVote(
+            "validation_reviewer",
+            "block",
+            "validation_failed",
+            "Validation failed deterministic research checks.",
+            evidence,
+        )
+    if readiness_floor == READINESS_NOT_READY:
         return ReviewBoardVote(
             "validation_reviewer",
             "block",
@@ -427,14 +477,25 @@ def _validation_reviewer_vote(
             evidence,
         )
     if (
-        validation.validation_status == "needs_review"
-        or validation.readiness_floor == "needs_review"
+        validation_status == VALIDATION_STATUS_NEEDS_REVIEW
+        or readiness_floor == READINESS_NEEDS_REVIEW
     ):
         return ReviewBoardVote(
             "validation_reviewer",
             "needs_review",
             "validation_needs_review",
             "Validation requires additional research review.",
+            evidence,
+        )
+    if (
+        validation_status != VALIDATION_STATUS_PASSED
+        or readiness_floor != READY_FOR_PAPER_RESEARCH
+    ):
+        return ReviewBoardVote(
+            "validation_reviewer",
+            "needs_review",
+            "validation_unknown_or_in_progress",
+            "Validation status or readiness floor is unknown or still in progress.",
             evidence,
         )
     return ReviewBoardVote(
@@ -529,7 +590,9 @@ def _load_data_quality_report(
 
 
 def _strategy_skill_id(session, candidate: AgentCandidateReviewORM) -> int | None:
-    payload = _json_loads(candidate.candidate_payload)
+    payload = _json_object_loads(candidate.candidate_payload)
+    if payload is None:
+        return None
     skill_key = str(
         payload.get("strategy_skill_key")
         or payload.get("strategy_name")
@@ -567,6 +630,18 @@ def _json_loads(value: str | None) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return {}
+
+
+def _json_object_loads(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
 
 
 def _utcnow() -> datetime:

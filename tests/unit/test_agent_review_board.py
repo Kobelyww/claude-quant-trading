@@ -1,3 +1,5 @@
+import json
+
 from quant_trading.agents.output_safety import contains_unsafe_agent_text
 from quant_trading.agents.review_board import (
     ReviewBoardVote,
@@ -19,6 +21,43 @@ def test_coordinator_caps_not_ready_floor_to_needs_more_research():
         data_quality_status="passed",
     )
     assert result.final_recommendation == "needs_more_research"
+
+
+def test_coordinator_caps_running_floor_to_needs_more_research():
+    result = coordinator_recommendation(
+        votes=[
+            ReviewBoardVote(
+                "validation_reviewer",
+                "pass",
+                "validation_passed",
+                "looks fine",
+                {},
+            )
+        ],
+        readiness_floor="running",
+        data_quality_status="passed",
+    )
+    assert result.final_recommendation == "needs_more_research"
+    assert "readiness_floor_not_ready" not in result.blocking_reason_codes
+    assert "readiness_floor_unknown_or_in_progress" in result.blocking_reason_codes
+
+
+def test_coordinator_caps_unknown_floor_to_needs_more_research():
+    result = coordinator_recommendation(
+        votes=[
+            ReviewBoardVote(
+                "validation_reviewer",
+                "pass",
+                "validation_passed",
+                "clear",
+                {},
+            )
+        ],
+        readiness_floor="experimental",
+        data_quality_status="passed",
+    )
+    assert result.final_recommendation == "needs_more_research"
+    assert "readiness_floor_unknown_or_in_progress" in result.blocking_reason_codes
 
 
 def test_coordinator_rejects_failed_data_quality():
@@ -50,6 +89,25 @@ def test_parse_reviewer_vote_rejects_unsafe_rationale():
     )
     assert vote.vote == "needs_review"
     assert vote.reason_code == "unsafe_reviewer_output"
+
+
+def test_parse_reviewer_vote_rejects_unsafe_evidence():
+    vote = parse_reviewer_vote(
+        json.dumps(
+            {
+                "vote": "pass",
+                "reason_code": "ok",
+                "rationale": "clear",
+                "evidence": {
+                    "snippet": "```python\nplace_live_order('000001')\n```",
+                },
+            }
+        ),
+        reviewer_role="risk_officer",
+    )
+    assert vote.vote == "needs_review"
+    assert vote.reason_code == "unsafe_reviewer_output"
+    assert vote.evidence == {}
 
 
 def test_coordinator_all_pass_ready_for_paper_research_consideration_is_research_only():

@@ -76,6 +76,21 @@ def test_shared_output_safety_rejects_live_order_and_code_text():
     assert contains_unsafe_agent_text(["research-only validation summary"]) is False
 
 
+@pytest.mark.parametrize(
+    "unsafe_text",
+    [
+        "真实下单",
+        "实盘交易",
+        "保证收益",
+        "稳赚",
+    ],
+)
+def test_shared_output_safety_rejects_chinese_live_trading_and_profit_claims(
+    unsafe_text,
+):
+    assert contains_unsafe_agent_text([unsafe_text]) is True
+
+
 def test_memory_service_rejects_unsafe_memory_text(in_memory_engine):
     service = LearningMemoryService(in_memory_engine)
     with pytest.raises(LearningMemoryError, match="unsafe memory content"):
@@ -101,6 +116,61 @@ def test_memory_service_extracts_operator_rejection_memory(
 
     duplicate_results = service.extract_from_candidate_review(rejected_candidate_review.id)
     assert duplicate_results[0].id == results[0].id
+
+
+def test_memory_service_redacts_operator_note_secrets_before_persisting(
+    in_memory_engine,
+):
+    now = datetime(2026, 7, 6, 9, 0, 0)
+    with session_scope(in_memory_engine) as session:
+        source = AgentRunRepository(session).create_running(
+            agent_type="strategy_idea",
+            symbol="000001",
+            model_name="fake-llm",
+            request_payload=json.dumps({"symbol": "000001"}),
+            job_run_id=None,
+            started_at=now,
+        )
+        AgentRunRepository(session).mark_succeeded(
+            source,
+            metrics_payload="{}",
+            result_payload=json.dumps(
+                {
+                    "candidate_payload": {
+                        "strategy_name": "ma_cross",
+                        "symbol": "000001",
+                    },
+                }
+            ),
+            finished_at=now,
+            duration_ms=1,
+        )
+        review = AgentCandidateReviewRepository(session).create_decision(
+            source_agent_run_id=source.id,
+            status="rejected",
+            symbol="000001",
+            strategy_name="ma_cross",
+            candidate_payload=json.dumps(
+                {"strategy_name": "ma_cross", "symbol": "000001"}
+            ),
+            backtest_request_payload=json.dumps(
+                {"job_type": "backtest_ma_cross", "payload": {"symbol": "000001"}}
+            ),
+            operator="tester",
+            operator_note="bad external note api key=sk-testsecret123456789",
+            decided_at=now,
+            created_at=now,
+        )
+        review_id = review.id
+
+    service = LearningMemoryService(in_memory_engine)
+    results = service.extract_from_candidate_review(review_id)
+    retrieved = service.retrieve(symbol="000001")
+
+    assert len(results) == 1
+    assert "[REDACTED]" in results[0].content
+    assert "sk-testsecret123456789" not in results[0].content
+    assert "sk-testsecret123456789" not in retrieved[0].content
 
 
 def test_memory_service_extracts_validation_report_failure_and_success(in_memory_engine):
@@ -137,6 +207,21 @@ def test_memory_service_extracts_validation_report_failure_and_success(in_memory
     ]
     assert passed_results[0].confidence == Decimal("0.7000")
     assert passed_results[0].importance == Decimal("0.5000")
+
+
+def test_memory_service_ignores_running_validation_reports(in_memory_engine):
+    running = _create_validation_report(
+        in_memory_engine,
+        validation_status="running",
+        readiness_floor="needs_review",
+        summary_payload={"reasons": [{"code": "still_running"}]},
+        source_agent_run_id=103,
+        candidate_source_id=203,
+        backtest_id=303,
+    )
+    service = LearningMemoryService(in_memory_engine)
+
+    assert service.extract_from_validation_report(running.id) == []
 
 
 def test_memory_service_retrieves_by_scope_budget_and_retires(in_memory_engine):

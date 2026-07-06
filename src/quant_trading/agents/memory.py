@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import Engine
 
 from quant_trading.agents.output_safety import contains_unsafe_agent_text
+from quant_trading.security import sanitize_error_message
 from quant_trading.storage.db import session_scope
 from quant_trading.storage.models import AgentLearningMemoryORM
 from quant_trading.storage.repositories import (
@@ -131,7 +132,8 @@ class LearningMemoryService:
                 raise LearningMemoryNotFoundError("research validation report not found")
 
             summary = _json_loads(report.summary_payload)
-            if report.validation_status == "passed":
+            validation_status = str(report.validation_status or "").strip().lower()
+            if validation_status == "passed":
                 memory_type = "strategy_success"
                 reason_code = "research_validation_passed"
                 importance = Decimal("0.5")
@@ -143,7 +145,7 @@ class LearningMemoryService:
                     f"Research validation passed for {report.strategy_name} on "
                     f"{report.symbol}. Use only as conservative research context."
                 )
-            else:
+            elif validation_status in {"failed", "needs_review"}:
                 memory_type = "strategy_failure"
                 reason_code = _first_summary_reason_code(summary)
                 importance = Decimal("0.7")
@@ -157,6 +159,8 @@ class LearningMemoryService:
                     f"{report.symbol}. Readiness floor: {report.readiness_floor}. "
                     f"Reason: {reason_code}."
                 )
+            else:
+                return []
 
             _ensure_safe_memory_text(title, content)
             row, _ = AgentLearningMemoryRepository(session).get_or_create_active(
@@ -339,7 +343,7 @@ def _ensure_safe_memory_text(title: str, content: str) -> None:
 def _safe_fragment(value: str | None, limit: int = 500) -> str:
     if not value:
         return ""
-    text = value.strip()[:limit]
+    text = sanitize_error_message(value.strip(), max_chars=limit)
     if contains_unsafe_agent_text([text]):
         return ""
     return text

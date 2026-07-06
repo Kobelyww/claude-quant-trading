@@ -35,6 +35,7 @@ UNSAFE_AGENT_TEXT_PATTERNS: tuple[Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(r"\b(?:real\s+money|real\s+capital|production\s+trading)\b", re.IGNORECASE),
+    re.compile(r"(?:真实下单|实盘交易|保证收益|稳赚)"),
     re.compile(
         r"\b(?:open|close)\b.{0,30}\b(?:long|short)\s+position\b",
         re.IGNORECASE,
